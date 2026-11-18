@@ -4,8 +4,9 @@ const input = search?.querySelector('input');
 const groups = [...document.querySelectorAll('[data-picker-group]')];
 const empty = document.querySelector('[data-picker-empty]');
 
-if (window.location.hash === '#create-section' && document.activeElement === document.body) {
-  document.getElementById('create-section')?.focus();
+const creationTarget = window.location.hash;
+if (['#create-section', '#create-page'].includes(creationTarget) && document.activeElement === document.body) {
+  document.getElementById(creationTarget.slice(1))?.focus();
 }
 
 function fold(value) {

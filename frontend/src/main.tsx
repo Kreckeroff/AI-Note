@@ -28,7 +28,7 @@ function enhanceNative(container: HTMLElement) {
   const scripts: string[] = [];
   if (container.querySelector('form[action="/login"]')) scripts.push('/sign-in.mjs');
   if (container.querySelector('[data-workspace-choice], [data-catalog]')) scripts.push('/workspace-menu.mjs');
-  if (container.querySelector('#space-dialog, #section-dialog')) scripts.push('/space-form.mjs');
+  if (container.querySelector('#space-dialog, #section-dialog, #page-dialog')) scripts.push('/space-form.mjs');
 
   for (const script of scripts) {
     // The Rust server also serves these modules for builds with no React bundle.
@@ -52,7 +52,7 @@ if (container && (!page || hasNativeInteraction(container))) {
     document.getElementById(activeId)?.focus({preventScroll: true});
   } else if (page.kind === 'catalog' && window.location.hash === '#create-space') {
     document.getElementById('create-space')?.focus();
-  } else if (page.kind === 'closedSpace' && window.location.hash === '#create-section') {
-    document.getElementById('create-section')?.focus();
+  } else if (page.kind === 'closedSpace' && ['#create-section', '#create-page'].includes(window.location.hash)) {
+    document.getElementById(window.location.hash.slice(1))?.focus();
   }
 }

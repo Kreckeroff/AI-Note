@@ -169,6 +169,9 @@ pub(crate) enum DocumentsTarget {
     Section(Uuid),
     NewSection,
     Sections,
+    Page(Uuid),
+    NewPage(Uuid),
+    Pages(Uuid),
 }
 
 #[derive(Clone, Copy)]
@@ -198,8 +201,20 @@ impl Route {
                     Some("sections") => match parts.next() {
                         None => DocumentsTarget::Sections,
                         Some("new") => DocumentsTarget::NewSection,
-                        Some(id) => DocumentsTarget::Section(canonical_uuid(id)?),
+                        Some(id) => {
+                            let section = canonical_uuid(id)?;
+                            match parts.next() {
+                                None => DocumentsTarget::Section(section),
+                                Some("pages") => match parts.next() {
+                                    None => DocumentsTarget::Pages(section),
+                                    Some("new") => DocumentsTarget::NewPage(section),
+                                    _ => return None,
+                                },
+                                _ => return None,
+                            }
+                        }
                     },
+                    Some("pages") => DocumentsTarget::Page(canonical_uuid(parts.next()?)?),
                     _ => return None,
                 };
                 Self::Documents(DocumentsRoute {
@@ -228,7 +243,7 @@ impl Route {
         !matches!(
             self,
             Self::Documents(DocumentsRoute {
-                target: DocumentsTarget::Sections,
+                target: DocumentsTarget::Sections | DocumentsTarget::Pages(_),
                 ..
             })
         )
@@ -239,7 +254,7 @@ impl Route {
             self,
             Self::Collection(_)
                 | Self::Documents(DocumentsRoute {
-                    target: DocumentsTarget::Sections,
+                    target: DocumentsTarget::Sections | DocumentsTarget::Pages(_),
                     ..
                 })
         )
@@ -269,6 +284,18 @@ pub(crate) fn sections_path(tenant: Uuid, space: Uuid) -> String {
 
 pub(crate) fn section_path(tenant: Uuid, space: Uuid, section: Uuid) -> String {
     format!("{}/{section}", sections_path(tenant, space))
+}
+
+pub(crate) fn pages_path(tenant: Uuid, space: Uuid, section: Uuid) -> String {
+    format!("{}/pages", section_path(tenant, space, section))
+}
+
+pub(crate) fn new_page_path(tenant: Uuid, space: Uuid, section: Uuid) -> String {
+    format!("{}/new", pages_path(tenant, space, section))
+}
+
+pub(crate) fn page_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
+    format!("{}/pages/{page}", space_path(tenant, space))
 }
 
 pub(crate) fn section_form_path(
@@ -367,5 +394,26 @@ mod route_tests {
         );
         assert_eq!(local_target(&format!("{SPACE}/sections")), "");
         assert!(Route::parse(&format!("{SPACE}/sections/{SECTION}/extra")).is_none());
+    }
+
+    #[test]
+    fn page_routes_keep_the_parent_for_creation_and_a_stable_reader_address() {
+        let page_id = "44444444-4444-4444-4444-444444444444";
+        let collection = format!("{SPACE}/sections/{SECTION}/pages");
+        let form = format!("{collection}/new?q=alpha&scope=mine&page=2");
+        let reader = format!("{SPACE}/pages/{page_id}?scope=membership");
+        let write = Route::parse(&collection).expect("page collection route");
+        assert!(write.allows_post());
+        assert!(!write.allows_read());
+        assert_eq!(local_target(&collection), "");
+        assert_eq!(local_target(&form), form);
+        assert_eq!(local_target(&reader), reader);
+        assert!(Route::parse(&format!("{collection}/{page_id}")).is_none());
+        assert!(Route::parse(&format!("{SPACE}/pages/{page_id}/new")).is_none());
+        for path in [form, reader] {
+            let route = Route::parse(path.split('?').next().unwrap()).unwrap();
+            assert!(route.allows_read());
+            assert!(!route.allows_post());
+        }
     }
 }

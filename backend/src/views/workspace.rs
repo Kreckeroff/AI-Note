@@ -5,11 +5,12 @@ use uuid::Uuid;
 use crate::db::{Space, Tenant};
 use crate::sections::SectionScreen;
 use crate::workspace::{
-    CatalogOptions, Scope, WORKSPACE_PATH, WorkspaceContext, new_space_path, space_path,
-    spaces_path, with_options,
+    CatalogOptions, Scope, WORKSPACE_PATH, WorkspaceContext, new_page_path, new_space_path,
+    section_path, space_path, spaces_path, with_options,
 };
 
 use super::{ClientPage, NORTH_ICON, PageAssets, html, icon, page, sections};
+use sections::DocumentKind;
 
 fn is_admin(role: &str) -> bool {
     matches!(role, "admin" | "superadmin")
@@ -359,26 +360,50 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
     let options = &ctx.catalog.options;
     let catalog_href = with_options(&spaces_path(ctx.tenant.id), options);
     let name = html(&space.name);
-    let folder = icon("folder");
     let next = icon("next");
-    let selected = tree.selected.as_ref();
-    let (title, crumb, empty) = if let Some(section) = selected {
-        let href = html(&with_options(&space_path(ctx.tenant.id, space.id), options));
-        (
-            section.title.as_str(),
-            format!(
-                r#"<a href="{href}">{name}</a>{next}<span aria-current="page">{}</span>"#,
-                html(&section.title),
-            ),
-            "Этот раздел пока пуст",
-        )
-    } else {
-        let empty = if tree.sections.is_empty() {
-            "В пространстве пока нет разделов"
-        } else {
-            "Выберите раздел в дереве"
-        };
-        (space.name.as_str(), format!("<span>{name}</span>"), empty)
+    let (title, kind, crumb, contents) = match (&tree.selected, &tree.selected_page) {
+        (Some(section), Some(page)) => {
+            let space_href = html(&with_options(&space_path(ctx.tenant.id, space.id), options));
+            let section_href = html(&with_options(
+                &section_path(ctx.tenant.id, space.id, section.id),
+                options,
+            ));
+            (
+                page.title.as_str(),
+                "file",
+                format!(
+                    r#"<a href="{space_href}">{name}</a>{next}<a href="{section_href}">{section}</a>{next}<span aria-current="page">{page}</span>"#,
+                    section = html(&section.title),
+                    page = html(&page.title),
+                ),
+                r#"<p class="document-empty">Пока здесь ничего нет.</p>"#.to_owned(),
+            )
+        }
+        (Some(section), None) => {
+            let space_href = html(&with_options(&space_path(ctx.tenant.id, space.id), options));
+            (
+                section.title.as_str(),
+                "folder",
+                format!(
+                    r#"<a href="{space_href}">{name}</a>{next}<span aria-current="page">{}</span>"#,
+                    html(&section.title),
+                ),
+                section_contents(ctx, space, tree, section.id),
+            )
+        }
+        (None, _) => {
+            let message = if tree.sections.is_empty() {
+                "В пространстве пока нет разделов"
+            } else {
+                "Выберите раздел в дереве"
+            };
+            (
+                space.name.as_str(),
+                "folder",
+                format!("<span>{name}</span>"),
+                empty_documents(message),
+            )
+        }
     };
     let content = format!(
         r#"
@@ -386,22 +411,30 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
     <div class="documents-content">
       <nav class="documents-path" aria-label="Путь"><a href="{catalog_href}">Пространства</a>{next}{crumb}</nav>
       <article class="documents-article">
-        <header class="space-heading"><span class="space-icon">{folder}</span>
+        <header class="space-heading"><span class="space-icon">{document_icon}</span>
           <div><h1>{title}</h1><div class="space-badges"><span>{lock}Закрытое</span><span>{access}</span></div></div>
         </header>
-        <section class="space-empty"><span class="space-icon">{layers}</span><h2>{empty}</h2></section>
+        {contents}
       </article>
     </div>"#,
         sidebar = sections::tree_sidebar(ctx, space, tree, &catalog_href),
         catalog_href = html(&catalog_href),
         title = html(title),
+        document_icon = icon(kind),
         lock = icon("lock"),
-        layers = icon("layers"),
         access = access_label(space),
     );
-    let dialog = tree.form.as_ref().map_or_else(String::new, |form| {
-        sections::creation_dialog(form, Some(&space.name))
-    });
+    let dialog = if let Some(form) = tree.page_form.as_ref() {
+        sections::creation_dialog(
+            form,
+            tree.selected.as_ref().map(|section| section.title.as_str()),
+            DocumentKind::Page,
+        )
+    } else {
+        tree.form.as_ref().map_or_else(String::new, |form| {
+            sections::creation_dialog(form, Some(&space.name), DocumentKind::Section)
+        })
+    };
     workspace_frame(
         title,
         Some(ctx),
@@ -416,12 +449,62 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
     )
 }
 
+fn empty_documents(message: &str) -> String {
+    format!(
+        r#"<section class="space-empty"><span class="space-icon">{}</span><h2>{}</h2></section>"#,
+        icon("layers"),
+        html(message),
+    )
+}
+
+fn section_contents(
+    ctx: &WorkspaceContext,
+    space: &Space,
+    tree: &SectionScreen,
+    section: Uuid,
+) -> String {
+    let pages: String = tree
+        .pages
+        .iter()
+        .filter(|page| page.section_id == section)
+        .map(|page| {
+            format!(
+                "<li>{}</li>",
+                sections::page_link(ctx, space, page, false, "space-action space-secondary")
+            )
+        })
+        .collect();
+    let mut content = if pages.is_empty() {
+        empty_documents("Этот раздел пока пуст")
+    } else {
+        format!(r#"<ul class="section-pages-list">{pages}</ul>"#)
+    };
+    if tree.can_create_section {
+        let form_href = with_options(
+            &new_page_path(ctx.tenant.id, space.id, section),
+            &ctx.catalog.options,
+        );
+        write!(
+            content,
+            r#"<a id="create-page" class="space-action primary-action page-create-link" href="{}">{}Добавить страницу</a>"#,
+            html(&form_href),
+            icon("add"),
+        )
+        .unwrap();
+    }
+    content
+}
+
 pub(crate) fn space_not_found() -> String {
     not_found("Пространство не найдено", ClientPage::SpaceNotFound)
 }
 
 pub(crate) fn section_not_found() -> String {
     not_found("Раздел не найден", ClientPage::SectionNotFound)
+}
+
+pub(crate) fn page_not_found() -> String {
+    not_found("Страница не найдена", ClientPage::PageNotFound)
 }
 
 fn not_found(title: &str, model: ClientPage<'_>) -> String {
@@ -526,7 +609,7 @@ mod tests {
     use super::*;
     use crate::{
         db::{Section, Tenant},
-        sections::{SectionForm, SectionScreen},
+        sections::{NameForm, SectionScreen},
         workspace::{Catalog, CatalogOptions, Scope},
     };
 
@@ -581,9 +664,12 @@ mod tests {
                 id: section_id,
                 title: selected.title.clone(),
             }],
+            pages: Vec::new(),
             selected: Some(selected),
+            selected_page: None,
             can_create_section: false,
             form: None,
+            page_form: None,
         };
         let reader = closed_space(&workspace, &space, &tree);
         assert!(reader.contains("Этот раздел пока пуст"));
@@ -594,7 +680,7 @@ mod tests {
         assert!(!reader.contains(r#"id="create-section""#));
 
         tree.can_create_section = true;
-        tree.form = Some(SectionForm {
+        tree.form = Some(NameForm {
             operation_id,
             title: "Решения < архив".to_owned(),
             error: "Уже есть раздел с таким названием.".to_owned(),
@@ -632,6 +718,10 @@ mod tests {
                 "sections": [{"id": section_id, "title": "Решения"}],
                 "selected": {"id": section_id, "title": "Решения"},
                 "canCreateSection": true,
+                "canCreatePage": true,
+                "pages": [],
+                "selectedPage": null,
+                "pageForm": null,
                 "form": {
                     "operationId": operation_id,
                     "title": form.title,

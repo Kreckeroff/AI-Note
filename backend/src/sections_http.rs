@@ -1,3 +1,7 @@
+mod pages;
+
+pub(crate) use pages::retry_before_authorization;
+
 use std::time::Duration;
 
 use axum::{extract::Request, http::StatusCode, response::Response};
@@ -5,9 +9,9 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    db::{CreateSection, Principal, Section, SectionTree, Space, Store},
+    db::{CreateSection, Page, Principal, Section, SectionTree, Space, Store},
     http::{self, html, plain, redirect},
-    sections::{SectionForm, SectionScreen},
+    sections::{NameForm, SectionScreen},
     views,
     workspace::{
         CatalogOptions, DocumentsRoute, DocumentsTarget, WorkspaceContext, canonical_uuid,
@@ -56,11 +60,11 @@ impl DocumentNavigation {
         operation_id: Uuid,
         title: &str,
         failure: Option<Failure>,
-    ) -> SectionForm {
+    ) -> NameForm {
         let DocumentsRoute { tenant, space, .. } = self.route;
         let action = section_form_path(&sections_path(tenant, space), from, &self.options);
         let cancel_to = format!("{}#create-section", self.destination(from));
-        SectionForm {
+        NameForm {
             operation_id,
             title: title.to_owned(),
             error: failure.map_or("", |failure| failure.message).to_owned(),
@@ -80,6 +84,17 @@ struct DocumentsPage {
     tree: SectionTree,
 }
 
+#[derive(Default)]
+struct Selection {
+    section: Option<Section>,
+    page: Option<Page>,
+}
+
+enum CreationDialog {
+    Section(NameForm),
+    Page(NameForm),
+}
+
 impl DocumentsPage {
     fn section(&self, id: Option<Uuid>) -> Option<Section> {
         let id = id?;
@@ -93,14 +108,22 @@ impl DocumentsPage {
     fn render(
         self,
         status: StatusCode,
-        selected: Option<Section>,
-        form: Option<SectionForm>,
+        selected: Selection,
+        dialog: Option<CreationDialog>,
     ) -> Response {
+        let (form, page_form) = match dialog {
+            Some(CreationDialog::Section(form)) => (Some(form), None),
+            Some(CreationDialog::Page(form)) => (None, Some(form)),
+            None => (None, None),
+        };
         let tree = SectionScreen {
             sections: self.tree.sections,
-            selected,
+            pages: self.tree.pages,
+            selected: selected.section,
+            selected_page: selected.page,
             can_create_section: self.tree.can_create,
             form,
+            page_form,
         };
         html(
             status,
@@ -125,8 +148,14 @@ pub(crate) async fn handle(
     request: Request,
 ) -> Result<Response, sqlx::Error> {
     let nav = DocumentNavigation::for_request(route, &request);
-    if route.target == DocumentsTarget::Sections {
-        return Ok(submit(store, &nav, principal, origin, request).await);
+    match route.target {
+        DocumentsTarget::Sections => {
+            return Ok(submit(store, &nav, principal, origin, request).await);
+        }
+        DocumentsTarget::Pages(section) => {
+            return Ok(pages::submit(store, &nav, section, principal, origin, request).await);
+        }
+        _ => {}
     }
     let Some(page) = load(store, &nav, principal).await? else {
         record(principal.id, route, "not-found");
@@ -134,9 +163,16 @@ pub(crate) async fn handle(
     };
 
     let response = match route.target {
-        DocumentsTarget::Space => page.render(StatusCode::OK, None, None),
+        DocumentsTarget::Space => page.render(StatusCode::OK, Selection::default(), None),
         DocumentsTarget::Section(id) => match page.section(Some(id)) {
-            Some(selected) => page.render(StatusCode::OK, Some(selected), None),
+            Some(section) => page.render(
+                StatusCode::OK,
+                Selection {
+                    section: Some(section),
+                    page: None,
+                },
+                None,
+            ),
             None => {
                 record(principal.id, route, "not-found");
                 return Ok(not_found(route.target));
@@ -154,10 +190,52 @@ pub(crate) async fn handle(
                 "",
                 None,
             );
-            page.render(StatusCode::OK, selected, Some(form))
+            page.render(
+                StatusCode::OK,
+                Selection {
+                    section: selected,
+                    page: None,
+                },
+                Some(CreationDialog::Section(form)),
+            )
         }
-        DocumentsTarget::Sections => {
-            unreachable!("section writes were handled before loading the page")
+        DocumentsTarget::Page(id) => {
+            let Some(selected) = page.tree.pages.iter().find(|entry| entry.id == id).cloned()
+            else {
+                record(principal.id, route, "not-found");
+                return Ok(not_found(route.target));
+            };
+            let section = page.section(Some(selected.section_id));
+            page.render(
+                StatusCode::OK,
+                Selection {
+                    section,
+                    page: Some(selected),
+                },
+                None,
+            )
+        }
+        DocumentsTarget::NewPage(section_id) => {
+            let Some(section) = page.section(Some(section_id)) else {
+                record(principal.id, route, "not-found");
+                return Ok(not_found(route.target));
+            };
+            if !page.tree.can_create {
+                record(principal.id, route, "forbidden");
+                return Ok(plain(StatusCode::FORBIDDEN, pages::DENIED));
+            }
+            let form = pages::creation_form(&nav, section.id, Uuid::new_v4(), "", None);
+            page.render(
+                StatusCode::OK,
+                Selection {
+                    section: Some(section),
+                    page: None,
+                },
+                Some(CreationDialog::Page(form)),
+            )
+        }
+        DocumentsTarget::Sections | DocumentsTarget::Pages(_) => {
+            unreachable!("document writes were handled before loading the page")
         }
     };
     record(principal.id, route, "opened");
@@ -287,7 +365,14 @@ async fn submit(
                 title,
                 Some(failure),
             );
-            page.render(failure.status, selected, Some(form))
+            page.render(
+                failure.status,
+                Selection {
+                    section: selected,
+                    page: None,
+                },
+                Some(CreationDialog::Section(form)),
+            )
         }
         Ok(Ok(Some(_))) => plain(StatusCode::FORBIDDEN, DENIED),
         Ok(Ok(None)) => not_found(route.target),
@@ -307,10 +392,10 @@ async fn submit(
 }
 
 fn not_found(target: DocumentsTarget) -> Response {
-    let page = if target == DocumentsTarget::Space {
-        views::space_not_found()
-    } else {
-        views::section_not_found()
+    let page = match target {
+        DocumentsTarget::Space => views::space_not_found(),
+        DocumentsTarget::Page(_) => views::page_not_found(),
+        _ => views::section_not_found(),
     };
     html(StatusCode::NOT_FOUND, page)
 }
@@ -319,6 +404,8 @@ fn record(account: Uuid, route: DocumentsRoute, outcome: &str) {
     let event = match route.target {
         DocumentsTarget::Space => "space.open",
         DocumentsTarget::Sections => "section.create",
+        DocumentsTarget::Pages(_) => "page.create",
+        DocumentsTarget::Page(_) | DocumentsTarget::NewPage(_) => "page.open",
         _ => "section.open",
     };
     eprintln!(

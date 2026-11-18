@@ -1,7 +1,9 @@
 mod configuration;
 pub(crate) mod import;
+mod pages;
 mod sections;
 
+pub(crate) use pages::{CreatePage, CreatePageInput, Page};
 pub(crate) use sections::{CreateSection, Section, SectionTree};
 
 use std::time::Duration;
@@ -108,6 +110,11 @@ pub(crate) enum CreateSpace {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn from_test_pool(pool: PgPool) -> Self {
+        Self(pool)
+    }
+
     pub(crate) async fn connect(url: &str) -> anyhow::Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(8)

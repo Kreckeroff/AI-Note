@@ -17,8 +17,8 @@ use crate::{
     http::{self, Form, FormError, html, plain, redirect},
     identity::{self, Identity, LoginOutcome},
     registration::Registration,
-    views,
-    workspace::{Route, WORKSPACE_PATH, local_target},
+    sections_http, views,
+    workspace::{DocumentsRoute, DocumentsTarget, Route, WORKSPACE_PATH, local_target},
     workspace_http,
 };
 
@@ -189,7 +189,39 @@ impl Server {
                 ),
             ));
         }
-        let Some(principal) = identity::identify(&self.store, request.headers()).await? else {
+        let route = route.expect("workspace route checked");
+        let identify = identity::identify(&self.store, request.headers());
+        let principal = if let Route::Documents(
+            documents @ DocumentsRoute {
+                target: DocumentsTarget::Pages(section),
+                ..
+            },
+        ) = route
+        {
+            // Reserve time to read the submitted form if the session lookup is unavailable.
+            match tokio::time::timeout(Duration::from_secs(2), identify).await {
+                Ok(Ok(principal)) => principal,
+                failure => {
+                    match failure {
+                        Ok(Err(error)) => {
+                            eprintln!("page.auth.failed category={}", database_error_kind(&error))
+                        }
+                        Err(_) => eprintln!("page.auth.failed category=timeout"),
+                        Ok(Ok(_)) => unreachable!(),
+                    }
+                    return Ok(sections_http::retry_before_authorization(
+                        documents,
+                        section,
+                        &self.origin,
+                        request,
+                    )
+                    .await);
+                }
+            }
+        } else {
+            identify.await?
+        };
+        let Some(principal) = principal else {
             let target = local_target(
                 request
                     .uri()
@@ -207,14 +239,7 @@ impl Server {
                 },
             );
         };
-        workspace_http::handle(
-            &self.store,
-            route.expect("workspace route checked"),
-            &principal,
-            &self.origin,
-            request,
-        )
-        .await
+        workspace_http::handle(&self.store, route, &principal, &self.origin, request).await
     }
 
     async fn login(&self, request: Request) -> Result<Response, sqlx::Error> {
@@ -310,4 +335,66 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
         views::UI_BUNDLE_PATH if !views::UI_BUNDLE.is_empty() => (JS, views::UI_BUNDLE),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{Body, to_bytes};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn page_post_preserves_the_form_if_session_lookup_is_unavailable() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/sections/33333333-3333-3333-3333-333333333333/pages",
+        );
+        const OPERATION: &str = "44444444-4444-4444-4444-444444444444";
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let request = |origin: &str, has_cookie: bool| {
+            let mut request = Request::builder()
+                .uri(format!("{PATH}?scope=mine"))
+                .method(Method::POST)
+                .header(header::HOST, &server.host)
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+            if has_cookie {
+                request =
+                    request.header(header::COOKIE, format!("sever_session={}", "A".repeat(43)));
+            }
+            let form = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("operation_id", OPERATION)
+                .append_pair("name", "План <на завтра>")
+                .finish();
+            request.body(Body::from(form)).unwrap()
+        };
+        let response = dispatch(State(server.clone()), request(&server.origin, true)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains(r#"value="План &lt;на завтра&gt;""#));
+        assert!(body.contains(&format!(r#"name="operation_id" value="{OPERATION}""#)));
+        assert!(body.contains(&format!(r#"action="{PATH}?scope=mine""#)));
+        assert!(!body.contains("Дерево пространства"));
+        assert!(!body.contains("sever-ui-data"));
+
+        let missing = dispatch(State(server.clone()), request(&server.origin, false)).await;
+        assert_eq!(missing.status(), StatusCode::SEE_OTHER);
+        assert_eq!(missing.headers()[header::LOCATION], "/");
+        let foreign = dispatch(State(server.clone()), request("http://foreign.test", true)).await;
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(foreign.into_body(), 4096).await.unwrap();
+        assert!(!std::str::from_utf8(&body).unwrap().contains("План"));
+    }
 }

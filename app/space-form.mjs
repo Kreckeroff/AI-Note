@@ -1,11 +1,16 @@
-const dialog = document.querySelector('#space-dialog, #section-dialog');
-const creatingSection = dialog.id === 'section-dialog';
+const dialog = document.querySelector('#space-dialog, #section-dialog, #page-dialog');
+const kind = dialog.id.split('-')[0];
+const labels = {
+  space: {saving: 'Создаём пространство.', blank: 'Введите название пространства.'},
+  section: {saving: 'Создаём раздел.', blank: 'Введите название раздела.'},
+  page: {saving: 'Создаём страницу.', blank: 'Введите название страницы.'},
+}[kind];
 const form = dialog.querySelector('form');
 const nameField = form.elements.namedItem('name');
 const submit = form.querySelector('button[type="submit"]');
-const status = dialog.querySelector('[data-space-status], [data-section-status]');
-const cancelLinks = dialog.querySelectorAll('[data-space-cancel], [data-section-cancel]');
-const inlineError = form.querySelector('#space-client-error, #section-client-error');
+const status = dialog.querySelector(`[data-${kind}-status]`);
+const cancelLinks = dialog.querySelectorAll(`[data-${kind}-cancel]`);
+const inlineError = form.querySelector(`#${kind}-client-error`);
 const serverDescription = nameField.getAttribute('aria-describedby');
 const serverInvalid = nameField.getAttribute('aria-invalid');
 const maxNameLength = 100;
@@ -23,7 +28,7 @@ function setSaving(saving) {
   submit.textContent = saving ? 'Создаём…' : 'Создать';
   nameField.readOnly = saving;
   form.setAttribute('aria-busy', String(saving));
-  status.textContent = saving ? (creatingSection ? 'Создаём раздел.' : 'Создаём пространство.') : '';
+  status.textContent = saving ? labels.saving : '';
   for (const link of cancelLinks) {
     if (saving) link.setAttribute('aria-disabled', 'true');
     else link.removeAttribute('aria-disabled');
@@ -41,10 +46,10 @@ form.addEventListener('submit', event => {
   const oversizedBlank = !name && enteredName.length > 0 && encodedFormLength(new FormData(form)) > maxFormBytes;
   if (tooLong || oversizedBlank) {
     event.preventDefault();
-    inlineError.textContent = tooLong ? 'Введите не больше 100 символов.' : (creatingSection ? 'Введите название раздела.' : 'Введите название пространства.');
+    inlineError.textContent = tooLong ? 'Введите не больше 100 символов.' : labels.blank;
     inlineError.hidden = false;
     nameField.setAttribute('aria-invalid', 'true');
-    nameField.setAttribute('aria-describedby', creatingSection ? 'section-help section-client-error' : 'space-help space-client-error');
+    nameField.setAttribute('aria-describedby', `${kind}-help ${kind}-client-error`);
     nameField.focus();
     return;
   }

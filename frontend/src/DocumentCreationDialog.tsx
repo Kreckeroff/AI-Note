@@ -1,11 +1,33 @@
 import {useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent} from 'react';
 import {Icon} from './Icon';
-import type {SectionFormModel} from './model';
+import type {DocumentFormModel} from './model';
 
 const maxNameLength = 100;
 const maxFormBytes = 4096;
 
-export function SectionDialog({form: fields, spaceName}: {form: SectionFormModel; spaceName: string}) {
+const labels = {
+  section: {
+    heading: 'Новый раздел',
+    placeholder: 'Например, Документация',
+    help: 'От 1 до 100 символов. Название должно быть уникальным в пространстве.',
+    blank: 'Введите название раздела.',
+    saving: 'Создаём раздел.',
+  },
+  page: {
+    heading: 'Новая страница',
+    placeholder: 'Например, Решение по доступу',
+    help: 'От 1 до 100 символов. Название должно быть уникальным в разделе.',
+    blank: 'Введите название страницы.',
+    saving: 'Создаём страницу.',
+  },
+};
+
+export function DocumentCreationDialog({kind, form: fields, parentName}: {
+  kind: keyof typeof labels;
+  form: DocumentFormModel;
+  parentName: string;
+}) {
+  const copy = labels[kind];
   const {operationId, title, error, invalidName, cancelTo, action, retryTo} = fields;
   const dialog = useRef<HTMLDialogElement>(null);
   const form = useRef<HTMLFormElement>(null);
@@ -56,7 +78,7 @@ export function SectionDialog({form: fields, spaceName}: {form: SectionFormModel
     const name = input.current?.value.trim() ?? '';
     if (!name || Array.from(name).length > maxNameLength) {
       event.preventDefault();
-      setClientError(name ? 'Введите не больше 100 символов.' : 'Введите название раздела.');
+      setClientError(name ? 'Введите не больше 100 символов.' : copy.blank);
       input.current?.focus();
       return;
     }
@@ -68,45 +90,51 @@ export function SectionDialog({form: fields, spaceName}: {form: SectionFormModel
     if (submitting.current) event.preventDefault();
   }
 
-  const description = clientError ? 'section-help section-client-error' :
-    error ? 'section-help section-error' : 'section-help';
+  const helpId = `${kind}-help`;
+  const clientErrorId = `${kind}-client-error`;
+  const serverErrorId = `${kind}-error`;
+  const nameId = `${kind}-name`;
+  const headingId = `${kind}-dialog-title`;
+  const description = clientError ? `${helpId} ${clientErrorId}` : error ? `${helpId} ${serverErrorId}` : helpId;
+  const cancelMarker = {[`data-${kind}-cancel`]: ''};
+  const statusMarker = {[`data-${kind}-status`]: ''};
 
   return (
-    <dialog ref={dialog} id="section-dialog" className="space-dialog section-dialog" aria-labelledby="section-dialog-title"
+    <dialog ref={dialog} id={`${kind}-dialog`} className={`space-dialog ${kind}-dialog`} aria-labelledby={headingId}
       onCancel={event => {
         event.preventDefault();
         if (!submitting.current) window.location.assign(cancelTo);
       }}>
       <header className="space-dialog-header">
         <div>
-          <h2 id="section-dialog-title">Новый раздел</h2>
-          <p className="space-dialog-tenant"><Icon name="folder" />{spaceName}</p>
+          <h2 id={headingId}>{copy.heading}</h2>
+          <p className="space-dialog-tenant"><Icon name="folder" />{parentName}</p>
         </div>
         <a className="space-action space-close" href={cancelTo} aria-label="Закрыть" aria-disabled={saving || undefined}
-          data-section-cancel onClick={onCancelLink}><Icon name="close" /></a>
+          {...cancelMarker} onClick={onCancelLink}><Icon name="close" /></a>
       </header>
       <form ref={form} className="space-form" method="post" action={action} noValidate onSubmit={onSubmit} aria-busy={saving}>
         <input type="hidden" name="operation_id" value={operationId} />
-        <label htmlFor="section-name">Название</label>
-        <input ref={input} id="section-name" name="name" defaultValue={title} placeholder="Например, Документация"
+        <label htmlFor={nameId}>Название</label>
+        <input ref={input} id={nameId} name="name" defaultValue={title} placeholder={copy.placeholder}
           required readOnly={saving} aria-describedby={description} aria-invalid={Boolean(clientError) || invalidName || undefined}
           onInput={() => setClientError('')} />
-        <p className="space-hint" id="section-help">От 1 до 100 символов. Название должно быть уникальным в пространстве.</p>
-        <p className="form-error" id="section-client-error" role="alert" hidden={!clientError}>{clientError}</p>
+        <p className="space-hint" id={helpId}>{copy.help}</p>
+        <p className="form-error" id={clientErrorId} role="alert" hidden={!clientError}>{clientError}</p>
         {error && (
-          <p className="form-error" id="section-error" role="alert">
+          <p className="form-error" id={serverErrorId} role="alert">
             {error}{retryTo && <> <a href={retryTo}>Открыть новую форму</a></>}
           </p>
         )}
         <div className="space-dialog-actions">
           <a className="space-action space-secondary" href={cancelTo} aria-disabled={saving || undefined}
-            data-section-cancel onClick={onCancelLink}>Отмена</a>
+            {...cancelMarker} onClick={onCancelLink}>Отмена</a>
           <button className="primary-action space-action" type="submit" disabled={saving}>
             {saving ? 'Создаём…' : 'Создать'}
           </button>
         </div>
       </form>
-      <p className="sr-only" role="status" data-section-status>{saving ? 'Создаём раздел.' : ''}</p>
+      <p className="sr-only" role="status" {...statusMarker}>{saving ? copy.saving : ''}</p>
     </dialog>
   );
 }

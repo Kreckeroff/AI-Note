@@ -7,9 +7,10 @@ pub(crate) use account::{
     no_tenant, registration_complete, registration_requested, registration_start, sign_in,
 };
 pub(crate) use client::{BUNDLE as UI_BUNDLE, BUNDLE_PATH as UI_BUNDLE_PATH};
-pub(crate) use sections::section_retry;
+pub(crate) use sections::{page_retry, section_retry};
 pub(crate) use workspace::{
-    catalog, catalog_unavailable, closed_space, create_space, section_not_found, space_not_found,
+    catalog, catalog_unavailable, closed_space, create_space, page_not_found, section_not_found,
+    space_not_found,
 };
 
 use std::borrow::Cow;
@@ -37,6 +38,7 @@ fn icon(name: &str) -> String {
     let path = match name {
         "add" => "M12 5v14 M5 12h14",
         "folder" => "M3 7V5a1 1 0 011-1h5l2 2h9a1 1 0 011 1v12H3z",
+        "file" => "M5 3h9l5 5v13H5z M14 3v5h5 M8 12h8 M8 16h8",
         "lock" => "M5 10h14v11H5z m3 0V7a4 4 0 118 0v3",
         "layers" => "m3 8 9-5 9 5-9 5-9-5zm0 5 9 5 9-5m-18 5 9 5 9-5",
         "back" => "M20 12H5m6 6-6-6 6-6",

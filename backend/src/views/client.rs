@@ -2,8 +2,8 @@ use serde::{Serialize, Serializer};
 use uuid::Uuid;
 
 use crate::{
-    db::{Section, Space, Tenant},
-    sections::{SectionForm, SectionScreen},
+    db::{Page, Section, Space, Tenant},
+    sections::{NameForm, SectionScreen},
     workspace::{CatalogOptions, WorkspaceContext},
 };
 
@@ -55,6 +55,7 @@ pub(super) enum ClientPage<'a> {
     },
     SpaceNotFound,
     SectionNotFound,
+    PageNotFound,
     CreateSpace {
         #[serde(serialize_with = "serialize_workspace")]
         workspace: &'a WorkspaceContext,
@@ -220,7 +221,7 @@ impl<'a> From<&'a Section> for SectionData<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SectionFormData<'a> {
+struct NameFormData<'a> {
     operation_id: Uuid,
     title: &'a str,
     error: &'a str,
@@ -230,8 +231,8 @@ struct SectionFormData<'a> {
     retry_to: Option<&'a str>,
 }
 
-impl<'a> From<&'a SectionForm> for SectionFormData<'a> {
-    fn from(form: &'a SectionForm) -> Self {
+impl<'a> From<&'a NameForm> for NameFormData<'a> {
+    fn from(form: &'a NameForm) -> Self {
         Self {
             operation_id: form.operation_id,
             title: &form.title,
@@ -246,11 +247,33 @@ impl<'a> From<&'a SectionForm> for SectionFormData<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct PageData<'a> {
+    id: Uuid,
+    section_id: Uuid,
+    title: &'a str,
+}
+
+impl<'a> From<&'a Page> for PageData<'a> {
+    fn from(page: &'a Page) -> Self {
+        Self {
+            id: page.id,
+            section_id: page.section_id,
+            title: &page.title,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SectionTreeData<'a> {
     sections: Vec<SectionData<'a>>,
     selected: Option<SectionData<'a>>,
     can_create_section: bool,
-    form: Option<SectionFormData<'a>>,
+    form: Option<NameFormData<'a>>,
+    pages: Vec<PageData<'a>>,
+    selected_page: Option<PageData<'a>>,
+    can_create_page: bool,
+    page_form: Option<NameFormData<'a>>,
 }
 
 fn serialize_section_tree<S: Serializer>(
@@ -261,7 +284,11 @@ fn serialize_section_tree<S: Serializer>(
         sections: tree.sections.iter().map(SectionData::from).collect(),
         selected: tree.selected.as_ref().map(SectionData::from),
         can_create_section: tree.can_create_section,
-        form: tree.form.as_ref().map(SectionFormData::from),
+        form: tree.form.as_ref().map(NameFormData::from),
+        pages: tree.pages.iter().map(PageData::from).collect(),
+        selected_page: tree.selected_page.as_ref().map(PageData::from),
+        can_create_page: tree.can_create_section,
+        page_form: tree.page_form.as_ref().map(NameFormData::from),
     }
     .serialize(serializer)
 }

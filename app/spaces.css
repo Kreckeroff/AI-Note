@@ -121,6 +121,7 @@
 .documents-tree summary { cursor: pointer; color: var(--ink); }
 .documents-tree p { margin-top: 6px; }
 .section-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.section-pages { list-style: none; margin: 0; padding-inline-start: 16px; }
 .documents-tree .section-list a { margin: 0; padding: 6px 8px; border-radius: 8px; color: var(--ink); }
 .documents-tree .section-list a:hover { background: var(--raised); }
 .documents-tree .section-list a[aria-current="page"] { background: var(--selected); color: var(--accent); }
@@ -131,6 +132,11 @@
 .documents-path a { color: var(--accent); }
 .documents-article { width: min(100%, 790px); margin-inline: auto; padding: clamp(20px, 4vw, 44px) clamp(13px, 4vw, 32px); }
 .documents-article h1 { font-size: clamp(25px, 5vw, 38px); overflow-wrap: anywhere; }
+.section-pages-list { display: grid; gap: 8px; list-style: none; margin: 24px 0 0; padding: 0; }
+.section-pages-list .space-action { display: flex; justify-content: flex-start; overflow-wrap: anywhere; }
+.section-pages-list .space-action span { min-width: 0; }
+.page-create-link { margin-top: 16px; }
+.document-empty { margin-top: 24px; color: var(--muted); }
 
 .space-dialog {
   position: fixed;

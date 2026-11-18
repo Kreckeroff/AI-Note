@@ -16,6 +16,14 @@ export function sectionPath(tenantId: string, spaceId: string, sectionId: string
   return `${spacePath(tenantId, spaceId)}/sections/${sectionId}`;
 }
 
+export function pagePath(tenantId: string, spaceId: string, pageId: string): string {
+  return `${spacePath(tenantId, spaceId)}/pages/${pageId}`;
+}
+
+export function newPagePath(tenantId: string, spaceId: string, sectionId: string): string {
+  return `${sectionPath(tenantId, spaceId, sectionId)}/pages/new`;
+}
+
 export function newSectionPath(tenantId: string, spaceId: string, options: CatalogOptions, from?: string): string {
   const path = withOptions(sectionPath(tenantId, spaceId, 'new'), options);
   return from ? `${path}${path.includes('?') ? '&' : '?'}from=${encodeURIComponent(from)}` : path;

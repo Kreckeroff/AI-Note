@@ -45,7 +45,13 @@ export interface Section {
   title: string;
 }
 
-export interface SectionFormModel {
+export interface DocumentPage {
+  id: string;
+  sectionId: string;
+  title: string;
+}
+
+export interface DocumentFormModel {
   operationId: string;
   title: string;
   error: string;
@@ -59,7 +65,11 @@ export interface SectionTreeModel {
   sections: Section[];
   selected: Section | null;
   canCreateSection: boolean;
-  form: SectionFormModel | null;
+  form: DocumentFormModel | null;
+  pages: DocumentPage[];
+  selectedPage: DocumentPage | null;
+  canCreatePage: boolean;
+  pageForm: DocumentFormModel | null;
 }
 
 export type AccountPageModel =
@@ -85,6 +95,7 @@ export type WorkspacePageModel =
   | {kind: 'closedSpace'; workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}
   | {kind: 'spaceNotFound'}
   | {kind: 'sectionNotFound'}
+  | {kind: 'pageNotFound'}
   | CreationPageModel;
 
 export type PageModel = AccountPageModel | WorkspacePageModel;
@@ -143,20 +154,28 @@ function isSection(value: unknown): boolean {
   return fields(value) && hasUuid(value.id) && strings(value, 'title');
 }
 
+function isDocumentPage(value: unknown): boolean {
+  return fields(value) && hasUuid(value.id) && hasUuid(value.sectionId) && strings(value, 'title');
+}
+
 function isWorkspacePath(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith('/workspace/');
 }
 
-function isSectionForm(value: unknown): boolean {
+function isDocumentForm(value: unknown): boolean {
   return fields(value) && hasUuid(value.operationId) && strings(value, 'title', 'error') &&
     typeof value.invalidName === 'boolean' && isWorkspacePath(value.cancelTo) &&
     isWorkspacePath(value.action) && (value.retryTo === null || isWorkspacePath(value.retryTo));
 }
 
 function isSectionTree(value: unknown): boolean {
-  return fields(value) && isList(value.sections, isSection) &&
-    (value.selected === null || isSection(value.selected)) && typeof value.canCreateSection === 'boolean' &&
-    (value.form === null || value.canCreateSection && isSectionForm(value.form));
+  if (!fields(value)) return false;
+  const hasSelectedSection = isSection(value.selected);
+  return isList(value.sections, isSection) && (value.selected === null || hasSelectedSection) &&
+    typeof value.canCreateSection === 'boolean' && (value.form === null || value.canCreateSection && isDocumentForm(value.form)) &&
+    isList(value.pages, isDocumentPage) && (value.selectedPage === null || hasSelectedSection && isDocumentPage(value.selectedPage)) &&
+    typeof value.canCreatePage === 'boolean' &&
+    (value.pageForm === null || hasSelectedSection && value.canCreatePage && isDocumentForm(value.pageForm));
 }
 
 function isPage(value: unknown): value is PageModel {
@@ -169,6 +188,7 @@ function isPage(value: unknown): value is PageModel {
     case 'registrationRequested':
     case 'spaceNotFound':
     case 'sectionNotFound':
+    case 'pageNotFound':
       return true;
     case 'registrationComplete':
       return strings(value, 'token', 'name', 'error');

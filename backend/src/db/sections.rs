@@ -1,7 +1,8 @@
 use sha2::{Digest, Sha256};
+use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
-use super::Store;
+use super::{Page, Store};
 use crate::text::{fold_name, js_trim};
 
 #[derive(Clone)]
@@ -12,7 +13,17 @@ pub(crate) struct Section {
 
 pub(crate) struct SectionTree {
     pub sections: Vec<Section>,
+    pub pages: Vec<Page>,
     pub can_create: bool,
+}
+
+#[derive(FromRow)]
+struct TreeRow {
+    can_create: bool,
+    section_id: Option<Uuid>,
+    section_title: Option<Vec<u8>>,
+    page_id: Option<Uuid>,
+    page_title: Option<Vec<u8>>,
 }
 
 pub(crate) enum CreateSection {
@@ -26,13 +37,37 @@ pub(crate) enum CreateSection {
 }
 
 // A visible space has exactly one access row for this active membership.
-const SPACE_ACCESS: &str =
+pub(super) const SPACE_ACCESS: &str =
     "SELECT (s.owner_account_id = m.account_id OR g.role IS NOT DISTINCT FROM 'editor') AS can_create
      FROM tenant_memberships m
      JOIN spaces s ON s.tenant_id = m.tenant_id AND s.id = $2
      LEFT JOIN space_grants g ON g.tenant_id = s.tenant_id AND g.space_id = s.id AND g.account_id = m.account_id
      WHERE m.tenant_id = $1 AND m.account_id = $3 AND m.status = 'active'
        AND (s.owner_account_id = m.account_id OR m.role IN ('admin', 'superadmin') OR g.role IS NOT NULL)";
+
+pub(super) async fn lock_active_member(
+    tx: &mut PgConnection,
+    tenant: Uuid,
+    account: Uuid,
+) -> Result<bool, sqlx::Error> {
+    // Grant changes lock this membership. Check the grant after taking that lock.
+    let member: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM tenant_memberships
+         WHERE tenant_id = $1 AND account_id = $2 AND status = 'active' FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(account)
+    .fetch_optional(tx)
+    .await?;
+    Ok(member.is_some())
+}
+
+fn decode_title(title: Vec<u8>, column: &str) -> Result<String, sqlx::Error> {
+    String::from_utf8(title).map_err(|source| sqlx::Error::ColumnDecode {
+        index: column.to_owned(),
+        source: Box::new(source),
+    })
+}
 
 impl Store {
     pub(crate) async fn sections(
@@ -42,36 +77,49 @@ impl Store {
         account: Uuid,
     ) -> Result<Option<SectionTree>, sqlx::Error> {
         let query = format!(
-            "SELECT access.can_create, r.id, r.title FROM ({SPACE_ACCESS}) access
+            "SELECT access.can_create, r.id AS section_id, r.title AS section_title,
+                    p.id AS page_id, p.title AS page_title
+             FROM ({SPACE_ACCESS}) access
              LEFT JOIN sections r ON r.tenant_id = $1 AND r.space_id = $2
-             ORDER BY r.position",
+             LEFT JOIN pages p ON p.tenant_id = r.tenant_id AND p.space_id = r.space_id AND p.section_id = r.id
+             ORDER BY r.position, p.position",
         );
-        let rows: Vec<(bool, Option<Uuid>, Option<Vec<u8>>)> = sqlx::query_as(&query)
+        let rows: Vec<TreeRow> = sqlx::query_as(&query)
             .bind(tenant)
             .bind(space)
             .bind(account)
             .fetch_all(&self.0)
             .await?;
-        let Some((can_create, _, _)) = rows.first() else {
+        let Some(first) = rows.first() else {
             return Ok(None);
         };
-        let can_create = *can_create;
-        let sections = rows
-            .into_iter()
-            .filter_map(|(_, id, title)| id.zip(title))
-            .map(|(id, title)| {
-                let title =
-                    String::from_utf8(title).map_err(|source| sqlx::Error::ColumnDecode {
-                        index: "sections.title".to_owned(),
-                        source: Box::new(source),
-                    })?;
-                Ok(Section { id, title })
-            })
-            .collect::<Result<Vec<_>, sqlx::Error>>()?;
-        Ok(Some(SectionTree {
-            sections,
-            can_create,
-        }))
+        let mut tree = SectionTree {
+            sections: Vec::new(),
+            pages: Vec::new(),
+            can_create: first.can_create,
+        };
+        for row in rows {
+            if let Some((section_id, title)) = row.section_id.zip(row.section_title) {
+                if tree
+                    .sections
+                    .last()
+                    .is_none_or(|section| section.id != section_id)
+                {
+                    tree.sections.push(Section {
+                        id: section_id,
+                        title: decode_title(title, "sections.title")?,
+                    });
+                }
+                if let Some((id, title)) = row.page_id.zip(row.page_title) {
+                    tree.pages.push(Page {
+                        id,
+                        section_id,
+                        title: decode_title(title, "pages.title")?,
+                    });
+                }
+            }
+        }
+        Ok(Some(tree))
     }
 
     pub(crate) async fn create_section(
@@ -86,16 +134,7 @@ impl Store {
         sqlx::query("SET LOCAL statement_timeout = '3s'")
             .execute(&mut *tx)
             .await?;
-        // Grant changes lock this membership. Check the grant after taking that lock.
-        let member: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM tenant_memberships
-             WHERE tenant_id = $1 AND account_id = $2 AND status = 'active' FOR UPDATE",
-        )
-        .bind(tenant)
-        .bind(account)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if member.is_none() {
+        if !lock_active_member(&mut tx, tenant, account).await? {
             return Ok(CreateSection::MissingSpace);
         }
 
