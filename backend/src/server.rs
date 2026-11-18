@@ -86,7 +86,11 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                     .path_and_query()
                     .map_or("", |part| part.as_str()),
             );
-            let catalog = Route::parse(request.uri().path()).is_some_and(Route::is_catalog);
+            let route = Route::parse(request.uri().path());
+            let catalog = route.is_some_and(Route::is_catalog);
+            let documents_read = matches!(route, Some(Route::Documents(_)))
+                && matches!(*request.method(), Method::GET | Method::HEAD)
+                && !target.is_empty();
             match tokio::time::timeout(Duration::from_secs(15), state.handle(request)).await {
                 Ok(Ok(response)) => response,
                 failure => {
@@ -105,6 +109,11 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                             } else {
                                 &target
                             }),
+                        )
+                    } else if documents_read {
+                        html(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            views::documents_unavailable(&target),
                         )
                     } else {
                         let mut response = html(
@@ -340,9 +349,152 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use axum::body::{Body, to_bytes};
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use sqlx::{
+        PgPool,
+        postgres::{PgConnectOptions, PgPoolOptions},
+    };
+    use uuid::Uuid;
 
     use super::*;
+    use crate::db::{CreatePage, CreatePageInput, CreateSection, CreateSpace};
+
+    #[sqlx::test]
+    #[ignore = "requires an isolated PostgreSQL DATABASE_URL with database creation privileges"]
+    async fn opening_a_space_selects_the_first_page_in_tree_order(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let store = Store::from_test_pool(pool.clone());
+        let tenant = Uuid::new_v4();
+        let owner =
+            identity::prepare_account("reader@example.test", "Читатель", "long test passphrase")
+                .unwrap();
+        store.add_account(&owner).await?;
+        sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 'Север')")
+            .bind(tenant)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO tenant_memberships VALUES ($1, $2, 'member', 'active', true, true)",
+        )
+        .bind(tenant)
+        .bind(owner.id)
+        .execute(&pool)
+        .await?;
+        let CreateSpace::Saved(space) = store
+            .create_space(tenant, owner.id, Uuid::new_v4(), "Документы")
+            .await?
+        else {
+            panic!("fixture space must be created");
+        };
+        let (token, session) = identity::prepare_session(identity::now_ms());
+        store.add_session(owner.id, &session).await?;
+        let server = Arc::new(Server {
+            store: store.clone(),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let request = |method, uri: String| {
+            dispatch(
+                State(server.clone()),
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::HOST, &server.host)
+                    .header(header::COOKIE, format!("sever_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let path = format!("/workspace/{tenant}/spaces/{space}");
+        let query = "?q=docs&scope=mine&page=4";
+        let space_url = format!("{path}{query}");
+        let empty = request(Method::GET, space_url.clone()).await;
+        assert_eq!(empty.status(), StatusCode::OK);
+        let body = to_bytes(empty.into_body(), 64 * 1024).await?;
+        assert!(std::str::from_utf8(&body)?.contains("В пространстве пока нет разделов"));
+        let mut sections = Vec::new();
+        for title in ["Пустой", "Черновики", "Архив"] {
+            let CreateSection::Saved(section) = store
+                .create_section(tenant, space, owner.id, Uuid::new_v4(), title)
+                .await?
+            else {
+                panic!("fixture section must be created");
+            };
+            sections.push(section);
+        }
+        let without_pages = request(Method::GET, space_url.clone()).await;
+        assert_eq!(without_pages.status(), StatusCode::OK);
+        let body = to_bytes(without_pages.into_body(), 64 * 1024).await?;
+        assert!(std::str::from_utf8(&body)?.contains("Нет доступных страниц"));
+
+        let mut pages = Vec::new();
+        for (section, title) in [
+            (sections[2], "Алфавит"),
+            (sections[1], "Первая страница"),
+            (sections[1], "Вторая страница"),
+        ] {
+            let CreatePage::Saved(page) = store
+                .create_page(CreatePageInput {
+                    tenant_id: tenant,
+                    space_id: space,
+                    section_id: section,
+                    account_id: owner.id,
+                    operation_id: Uuid::new_v4(),
+                    title,
+                })
+                .await?
+            else {
+                panic!("fixture page must be created");
+            };
+            pages.push(page);
+        }
+
+        let first = format!("{path}/pages/{}{query}", pages[1]);
+        for method in [Method::GET, Method::HEAD] {
+            let response = request(method, space_url.clone()).await;
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            assert_eq!(response.headers()[header::LOCATION], first);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+
+        let explicit = request(Method::GET, format!("{path}/pages/{}{query}", pages[2])).await;
+        assert_eq!(explicit.status(), StatusCode::OK);
+        let body = to_bytes(explicit.into_body(), 128 * 1024).await?;
+        assert!(std::str::from_utf8(&body)?.contains("<h1>Вторая страница</h1>"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unavailable_document_read_offers_a_local_retry() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333",
+        );
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let request = Request::builder()
+            .uri(format!("{PATH}?scope=mine&page=3&unexpected=ignored"))
+            .header(header::HOST, &server.host)
+            .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+            .body(Body::empty())
+            .unwrap();
+        let response = dispatch(State(server), request).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains("Не удалось открыть документы"));
+        assert!(body.contains(&format!(r#"href="{PATH}?scope=mine&amp;page=3""#)));
+    }
 
     #[tokio::test]
     async fn page_post_preserves_the_form_if_session_lookup_is_unavailable() {

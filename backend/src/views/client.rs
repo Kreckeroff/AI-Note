@@ -45,6 +45,9 @@ pub(super) enum ClientPage<'a> {
     CatalogUnavailable {
         retry_to: &'a str,
     },
+    DocumentsUnavailable {
+        retry_to: &'a str,
+    },
     ClosedSpace {
         #[serde(serialize_with = "serialize_workspace")]
         workspace: &'a WorkspaceContext,

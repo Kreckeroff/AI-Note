@@ -92,6 +92,7 @@ export type CreationPageModel = {
 export type WorkspacePageModel =
   | {kind: 'catalog'; workspace: WorkspaceModel}
   | {kind: 'catalogUnavailable'; retryTo: string}
+  | {kind: 'documentsUnavailable'; retryTo: string}
   | {kind: 'closedSpace'; workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}
   | {kind: 'spaceNotFound'}
   | {kind: 'sectionNotFound'}
@@ -197,6 +198,7 @@ function isPage(value: unknown): value is PageModel {
     case 'catalog':
       return isWorkspace(value.workspace);
     case 'catalogUnavailable':
+    case 'documentsUnavailable':
       return strings(value, 'retryTo');
     case 'closedSpace':
       return isWorkspace(value.workspace) && isSpace(value.space) && isSectionTree(value.tree);

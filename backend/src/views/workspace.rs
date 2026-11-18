@@ -343,16 +343,40 @@ pub(crate) fn catalog(ctx: &WorkspaceContext) -> String {
 }
 
 pub(crate) fn catalog_unavailable(retry_to: &str) -> String {
-    workspace_frame(
+    workspace_unavailable(
         "Пространства",
+        "Не удалось загрузить пространства",
+        retry_to,
+        ClientPage::CatalogUnavailable { retry_to },
+    )
+}
+
+pub(crate) fn documents_unavailable(retry_to: &str) -> String {
+    workspace_unavailable(
+        "Документы",
+        "Не удалось открыть документы",
+        retry_to,
+        ClientPage::DocumentsUnavailable { retry_to },
+    )
+}
+
+fn workspace_unavailable(
+    title: &str,
+    heading: &str,
+    retry_to: &str,
+    client: ClientPage<'_>,
+) -> String {
+    workspace_frame(
+        title,
         None,
         None,
         &format!(
-            r#"<section class="space-empty"><h1>Не удалось загрузить пространства</h1><a class="space-action space-secondary" href="{}">Повторить попытку</a></section>"#,
+            r#"<section class="space-empty"><h1>{}</h1><a class="space-action space-secondary" href="{}">Повторить попытку</a></section>"#,
+            html(heading),
             html(retry_to),
         ),
         "",
-        ClientPage::CatalogUnavailable { retry_to },
+        client,
     )
 }
 
@@ -394,6 +418,8 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
         (None, _) => {
             let message = if tree.sections.is_empty() {
                 "В пространстве пока нет разделов"
+            } else if tree.pages.is_empty() {
+                "Нет доступных страниц"
             } else {
                 "Выберите раздел в дереве"
             };

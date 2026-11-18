@@ -15,8 +15,8 @@ use crate::{
     views,
     workspace::{
         CatalogOptions, DocumentsRoute, DocumentsTarget, WorkspaceContext, canonical_uuid,
-        new_section_path, section_form_path, section_origin, section_path, sections_path,
-        space_path, with_options,
+        new_section_path, page_path, section_form_path, section_origin, section_path,
+        sections_path, space_path, with_options,
     },
 };
 
@@ -163,7 +163,13 @@ pub(crate) async fn handle(
     };
 
     let response = match route.target {
-        DocumentsTarget::Space => page.render(StatusCode::OK, Selection::default(), None),
+        DocumentsTarget::Space => match page.tree.pages.first() {
+            Some(first) => redirect(&with_options(
+                &page_path(route.tenant, route.space, first.id),
+                &nav.options,
+            )),
+            None => page.render(StatusCode::OK, Selection::default(), None),
+        },
         DocumentsTarget::Section(id) => match page.section(Some(id)) {
             Some(section) => page.render(
                 StatusCode::OK,

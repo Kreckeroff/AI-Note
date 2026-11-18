@@ -35,7 +35,8 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
   const sectionHref = (id: string) => withOptions(sectionPath(tenant.id, space.id, id), options);
   const pageHref = (id: string) => withOptions(pagePath(tenant.id, space.id, id), options);
   const emptyMessage = selected ? 'Этот раздел пока пуст' :
-    sections.length ? 'Выберите раздел в дереве' : 'В пространстве пока нет разделов';
+    !sections.length ? 'В пространстве пока нет разделов' :
+      !pages.length ? 'Нет доступных страниц' : 'Выберите раздел в дереве';
 
   return (
     <main className="documents-shell">
@@ -140,7 +141,7 @@ const missingResourceTitles = {
 };
 
 function WorkspaceError({page}: {
-  page: Extract<WorkspacePageModel, {kind: 'catalogUnavailable' | keyof typeof missingResourceTitles}>;
+  page: Extract<WorkspacePageModel, {kind: 'catalogUnavailable' | 'documentsUnavailable' | keyof typeof missingResourceTitles}>;
 }) {
   return (
     <>
@@ -148,9 +149,9 @@ function WorkspaceError({page}: {
         <div className="workspace-dock"><a className="dock-tenant" href="/workspace"><Icon />Север</a></div>
       </header>
       <main className="space-shell">
-        {page.kind === 'catalogUnavailable' ? (
+        {page.kind === 'catalogUnavailable' || page.kind === 'documentsUnavailable' ? (
           <section className="space-empty">
-            <h1>Не удалось загрузить пространства</h1>
+            <h1>{page.kind === 'catalogUnavailable' ? 'Не удалось загрузить пространства' : 'Не удалось открыть документы'}</h1>
             <a className="space-action space-secondary" href={page.retryTo}>Повторить попытку</a>
           </section>
         ) : (
@@ -167,8 +168,8 @@ function WorkspaceError({page}: {
 }
 
 export function WorkspacePage({page}: {page: WorkspacePageModel}) {
-  if (page.kind === 'catalogUnavailable' || page.kind === 'spaceNotFound' || page.kind === 'sectionNotFound' ||
-      page.kind === 'pageNotFound') {
+  if (page.kind === 'catalogUnavailable' || page.kind === 'documentsUnavailable' || page.kind === 'spaceNotFound' ||
+      page.kind === 'sectionNotFound' || page.kind === 'pageNotFound') {
     return <WorkspaceError page={page} />;
   }
   if (page.kind === 'closedSpace') {
