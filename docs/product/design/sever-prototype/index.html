@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0e1425">
+  <title>Север · Рабочее пространство</title>
+  <link rel="stylesheet" href="../graph.css">
+  <link rel="stylesheet" href="workspace.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">К рабочей области</a>
+  <header id="dock"></header>
+  <main id="workspace" tabindex="-1"></main>
+  <dialog id="panel" aria-labelledby="dialog-title"></dialog>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <noscript>Включите JavaScript, чтобы открыть рабочее пространство.</noscript>
+  <script src="../graph.js"></script>
+  <script type="module" src="workspace.mjs"></script>
+</body>
+</html>

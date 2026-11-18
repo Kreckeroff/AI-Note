@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1c2341">
+  <title>Центр фич</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Центр фич, главная"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>Центр фич<small>AI knowledge base</small></span></a>
+    <nav aria-label="Рабочее пространство" class="nav">
+      <button type="button" data-view="board" aria-current="page"><span class="nav-icon" aria-hidden="true">▥</span>Доска</button>
+      <button type="button" data-view="backlog"><span class="nav-icon" aria-hidden="true">☷</span>Бэклог</button>
+      <button type="button" data-view="roadmap"><span class="nav-icon" aria-hidden="true">⌁</span>Роадмапа</button>
+      <button type="button" data-view="deps"><span class="nav-icon" aria-hidden="true">◇</span>Зависимости</button>
+    </nav>
+    <div class="side-foot">
+      <a href="/docs/workflow/operating-model.md" target="_blank" rel="noopener"><span aria-hidden="true">↗</span> Регламент</a>
+      <span id="connection"><i></i> Локальный реестр</span>
+    </div>
+  </aside>
+  <main>
+    <div class="topbar"><span id="space-label">Рабочее пространство</span><time id="today"></time></div>
+    <div class="stage">
+      <header class="page-head">
+        <div class="heading"><h1 id="heading">Доска фич</h1><p id="subtitle">Статусы, согласования и следующая работа.</p></div>
+        <button class="primary" id="new" type="button"><b aria-hidden="true">+</b> Новая фича</button>
+      </header>
+      <section id="metrics" class="metrics" aria-label="Состояние реестра"></section>
+      <div class="toolbar" id="tools">
+        <label class="search"><span aria-hidden="true">⌕</span><input id="query" type="search" placeholder="Найти фичу по названию или ID" aria-label="Поиск фич"></label>
+        <select id="status-filter" aria-label="Этап"></select>
+        <select id="scope-filter" aria-label="Обязательность"></select>
+        <select id="priority-filter" aria-label="Приоритет"></select>
+        <button class="secondary" id="more" type="button" aria-expanded="false" aria-controls="advanced">Фильтры <span aria-hidden="true">⌄</span></button>
+        <select id="sort" aria-label="Сортировка"><option value="priority">По приоритету</option><option value="updated">По обновлению</option><option value="date">По сроку</option><option value="title">По названию</option></select>
+        <button class="secondary" id="clear" type="button" hidden>Сбросить</button>
+      </div>
+      <div class="advanced" id="advanced" hidden>
+        <select id="owner-filter" aria-label="Владелец"></select>
+        <select id="due-filter" aria-label="Срок"><option value="">Любой срок</option><option value="today">Срок сегодня</option><option value="overdue">Просрочено</option><option value="scheduled">Есть дата</option><option value="unscheduled">Без даты</option></select>
+        <select id="block-filter" aria-label="Блокировка"><option value="">Любая доступность</option><option value="blocked">Заблокированы</option><option value="free">Без блокировки</option></select>
+      </div>
+      <div id="content" aria-live="polite"><p class="empty">Загружаем реестр…</p></div>
+    </div>
+  </main>
+  <dialog id="drawer" aria-labelledby="drawer-title">
+    <div class="drawer-inner">
+      <div class="drawer-head"><div><div id="drawer-id" class="feature-id"></div><h2 id="drawer-title"></h2></div><button class="icon-button" id="close" type="button" aria-label="Закрыть">×</button></div>
+      <div class="drawer-tabs" id="tabs" aria-label="Разделы карточки"></div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </div>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

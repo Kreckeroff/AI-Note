@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Север · План фич и визуальная основа</title>
+  <style>
+    :root { color-scheme:light dark; --page:#f1f4fa; --surface:#fff; --ink:#202943; --secondary:#4c5b78; --accent:#424f9e; --line:#ccd4e3; --tint:#e9edf8; --shadow:0 6px 22px #29395e12; }
+    @media(prefers-color-scheme:dark) { :root { --page:#0e1425; --surface:#12192d; --ink:#eff0ff; --secondary:#b2bbda; --accent:#c0caff; --line:#39445e; --tint:#222c46; --shadow:0 6px 22px #080d1b55; } }
+    * {box-sizing:border-box} html {scroll-padding-top:86px}
+    body {margin:0; background:var(--page); color:var(--ink); font:16px/1.58 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    a {color:var(--accent); text-underline-offset:3px} a:focus-visible {outline:2px solid var(--accent); outline-offset:3px}
+    nav {position:sticky; top:12px; z-index:2; display:flex; align-items:center; justify-content:center; width:max-content; max-width:calc(100% - 16px); gap:4px; margin:12px auto 0; padding:5px 8px; background:var(--surface); border:1px solid var(--line); border-radius:17px; box-shadow:var(--shadow); font-size:.86rem}
+    nav a {padding:5px 10px; text-decoration:none; border-radius:10px; color:var(--ink)} nav a:is(:hover,:focus-visible) {background:var(--tint)}
+    main {width:min(1120px,calc(100% - 64px)); margin:54px auto 90px} h1,h2 {line-height:1.1; letter-spacing:-.035em; text-wrap:balance}
+    h1 {font-size:clamp(2.3rem,5vw,4.6rem); margin:.25em 0 .45em} h2 {font-size:clamp(1.5rem,2.8vw,2.25rem); margin:1.65em 0 .5em}
+    p,ol {max-width:82ch} ol {padding-left:1.55em} li {margin:.55em 0} h1+p {font-size:1.12em}
+    table {width:100%; border-collapse:separate; border-spacing:0; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface); text-align:left; margin:1.2rem 0; font-size:.92rem; line-height:1.46}
+    colgroup {display:none} th {background:var(--tint); color:var(--secondary); font-weight:650}
+    td,th {padding:.8em 1em; vertical-align:top} td {border-top:1px solid var(--line)} td:first-child {font-weight:600; min-width:10em} td:last-child {max-width:38em}
+    td code {white-space:nowrap} .chip {display:inline-block; vertical-align:-.08em; width:.88em; height:.88em; border-radius:50%; margin-right:.45em; border:1px solid var(--line)}
+    figure {display:inline-block; width:calc(50% - 9px); margin:12px 9px 4px 0; vertical-align:top} figure:nth-of-type(even) {margin-right:0}
+    figure img {display:block; width:100%; height:auto; border-radius:12px; border:1px solid var(--line)} figcaption {font-size:.85em; margin-top:6px; color:var(--secondary)}
+    a#style {display:block; margin-top:4rem; border-top:1px solid var(--line); scroll-margin-top:82px}
+    @media(max-width:700px) {
+      main {width:calc(100% - 28px); margin:34px auto 55px} nav {top:6px; padding:4px; font-size:.79rem} nav a {padding:5px 7px}
+      figure {width:100%; margin:10px 0} table.with-labels {display:block; border:0; border-radius:0; background:transparent}
+      .with-labels thead {position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(100%)}
+      .with-labels tbody,.with-labels td {display:block} .with-labels tr {display:block; margin:.65rem 0; padding:.7rem .85rem; border:1px solid var(--line); border-radius:12px; background:var(--surface)}
+      .with-labels td {border:0; max-width:none; padding:.24em 0} .with-labels td:first-child {font-size:1.04rem}
+      .with-labels td+td::before {content:attr(data-label) " · "; color:var(--secondary); font-size:.84rem; font-weight:600}
+    }
+    @media print {nav {display:none} body {background:white;color:#12192d} main {margin:0;width:100%} tr,figure {break-inside:avoid} h2 {break-after:avoid}}
+  </style>
+</head>
+<body>
+  <!-- Build from the project root: pandoc --section-divs --template=docs/product/design/product-guide.template.html docs/product/implementation-plan.md docs/product/visual-style.md -o docs/product/implementation-plan.html -->
+  <nav aria-label="Навигация по материалам продукта">
+    <a href="#roadmap">План фич</a><a href="#style">Стиль</a><a href="design/?theme=light#atlas/graph/access">Граф ↗</a><a href="http://127.0.0.1:4117/">Реестр ↗</a>
+  </nav>
+  <main id="roadmap">$body$</main>
+  <script>
+    for (const table of document.querySelectorAll("table")) {
+      const labels = Array.from(table.querySelectorAll("thead th"), header => header.textContent.trim());
+      if (!labels.length) continue;
+      for (const row of table.tBodies[0].rows) {
+        Array.from(row.cells).forEach((cell, index) => { cell.dataset.label = labels[index]; });
+      }
+      table.classList.add("with-labels");
+    }
+    for (const code of document.querySelectorAll("td code")) {
+      const color = code.textContent.trim();
+      if (!/^#[a-f0-9]{6}$$/i.test(color)) continue;
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.backgroundColor = color;
+      chip.setAttribute("aria-hidden", "true");
+      code.before(chip);
+    }
+  </script>
+</body>
+</html>

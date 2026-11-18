@@ -1,0 +1,714 @@
+{
+  "schema_version": 1,
+  "verified_date": "2026-11-18",
+  "scope": "Selected session skills and manually verified installed design skills",
+  "count": 86,
+  "skills": [
+    {
+      "role": "orchestrator-product",
+      "name": "product-management:roadmap-update",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/roadmap-update/SKILL.md",
+      "trigger": "Изменение приоритетов и дорожной карты",
+      "condition": null
+    },
+    {
+      "role": "orchestrator-product",
+      "name": "product-management:sprint-planning",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/sprint-planning/SKILL.md",
+      "trigger": "Планирование с учётом ёмкости и зависимостей",
+      "condition": null
+    },
+    {
+      "role": "orchestrator-product",
+      "name": "product-management:stakeholder-update",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/stakeholder-update/SKILL.md",
+      "trigger": "Сводка состояния и решений",
+      "condition": null
+    },
+    {
+      "role": "orchestrator-product",
+      "name": "product-management:metrics-review",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/metrics-review/SKILL.md",
+      "trigger": "Проверка продуктового результата",
+      "condition": null
+    },
+    {
+      "role": "orchestrator-product",
+      "name": "mattpocock-skills:writing-for-agents",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/productivity/writing-for-agents/SKILL.md",
+      "trigger": "Агентские документы и пакеты контекста",
+      "condition": null
+    },
+    {
+      "role": "orchestrator-product",
+      "name": "skill-creator",
+      "source_plugin": "system",
+      "path": "/Users/kreckeroff/.codex/skills/.system/skill-creator/SKILL.md",
+      "trigger": "Создание связующего навыка под подтверждённый процесс",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "mattpocock-skills:grilling",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/productivity/grilling/SKILL.md",
+      "trigger": "Уточнение решений и противоречий с пользователем",
+      "condition": "Решения согласует владелец; факты среды исследует агент"
+    },
+    {
+      "role": "analyst",
+      "name": "mattpocock-skills:domain-modeling",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/domain-modeling/SKILL.md",
+      "trigger": "Термины, сущности, состояния и бизнес-правила",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "mattpocock-skills:research",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/research/SKILL.md",
+      "trigger": "Проверка неизвестных фактов по первичным источникам",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "mattpocock-skills:prototype",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/prototype/SKILL.md",
+      "trigger": "Проверка гипотезы одноразовым прототипом",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "product-management:write-spec",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/write-spec/SKILL.md",
+      "trigger": "PRD и критерии приёмки новой фичи",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "product-management:product-brainstorming",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/product-brainstorming/SKILL.md",
+      "trigger": "Исследование задачи до фиксации решения",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "product-management:synthesize-research",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/synthesize-research/SKILL.md",
+      "trigger": "Обобщение интервью и обратной связи",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "product-management:competitive-brief",
+      "source_plugin": "product-management",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/product-management/1.2.0/skills/competitive-brief/SKILL.md",
+      "trigger": "Сравнение конкурентов",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "design:user-research",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/user-research/SKILL.md",
+      "trigger": "План исследования пользователей",
+      "condition": null
+    },
+    {
+      "role": "analyst",
+      "name": "design-skills:journey-mapping",
+      "source_plugin": "design-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design-skills/1.0.0/skills/journey-mapping/SKILL.md",
+      "trigger": "Пользовательские пути",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "engineering:architecture",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/architecture/SKILL.md",
+      "trigger": "ADR при выборе решения",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "engineering:system-design",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/system-design/SKILL.md",
+      "trigger": "Границы системы и ответственность",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "mattpocock-skills:codebase-design",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/codebase-design/SKILL.md",
+      "trigger": "Публичные интерфейсы и границы тестирования",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "ai-integration-architect:ai-integration-architect",
+      "source_plugin": "ai-integration-architect",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/ai-integration-architect/1.0.0/skills/ai-integration-architect/SKILL.md",
+      "trigger": "Интеграция ИИ, MCP, RAG и существующих систем",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "arxitect:api-design-review",
+      "source_plugin": "arxitect",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/arxitect/1.1.1/skills/api-design-review/SKILL.md",
+      "trigger": "Проверка API-контрактов",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "arxitect:oo-design-review",
+      "source_plugin": "arxitect",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/arxitect/1.1.1/skills/oo-design-review/SKILL.md",
+      "trigger": "Проверка объектной модели",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "arxitect:clean-architecture-review",
+      "source_plugin": "arxitect",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/arxitect/1.1.1/skills/clean-architecture-review/SKILL.md",
+      "trigger": "Проверка зависимостей компонентов",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "clean-architecture:boundary",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/boundary/SKILL.md",
+      "trigger": "Архитектурная граница",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "clean-architecture:components",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/components/SKILL.md",
+      "trigger": "Связность и связанность компонентов",
+      "condition": null
+    },
+    {
+      "role": "architect",
+      "name": "clean-architecture:diagram",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/diagram/SKILL.md",
+      "trigger": "Схема архитектуры по кодовой базе",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "better-typography",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-typography/SKILL.md",
+      "trigger": "Иерархия заголовков и длина строки",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-layout",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-layout/SKILL.md",
+      "trigger": "Композиция панелей и адаптивность",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "interface-review",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/interface-review/SKILL.md",
+      "trigger": "Ревью изменённых экранов по diff",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-interface",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-interface/SKILL.md",
+      "trigger": "Комплексная оценка интерфейса",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-accessibility",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-accessibility/SKILL.md",
+      "trigger": "Клавиатура, фокус и доступные состояния",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-ui",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-ui/SKILL.md",
+      "trigger": "Детали компонентов и обратная связь",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-writing",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-writing/SKILL.md",
+      "trigger": "Подписи действий и статусы",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "better-colors",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/better-colors/SKILL.md",
+      "trigger": "Цветовые роли и контраст",
+      "condition": null,
+      "source_repository": "jakubkrehel/skills",
+      "source_revision": "9bd02c06211a8fd720e577aa8ffb3895c7104a8a"
+    },
+    {
+      "role": "designer",
+      "name": "shadcn",
+      "source_plugin": null,
+      "path": "/Users/kreckeroff/.codex/skills/shadcn/SKILL.md",
+      "trigger": "Подбор и композиция компонентов shadcn/ui",
+      "condition": "При выборе shadcn/ui",
+      "source_repository": "shadcn-ui/ui",
+      "source_revision": "968d8cb9dc42ae5d52e8fd356cf84596ec832a26"
+    },
+    {
+      "role": "designer",
+      "name": "design:design-system",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/design-system/SKILL.md",
+      "trigger": "Расширение существующей дизайн-системы",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design:design-critique",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/design-critique/SKILL.md",
+      "trigger": "Оценка макетов и сценария",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design:design-handoff",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/design-handoff/SKILL.md",
+      "trigger": "Передача макета разработчикам",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design:ux-copy",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/ux-copy/SKILL.md",
+      "trigger": "Тексты, ошибки и пустые состояния",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design-skills:design-systems",
+      "source_plugin": "design-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design-skills/1.0.0/skills/design-systems/SKILL.md",
+      "trigger": "Токены и компоненты",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design-skills:interaction-design",
+      "source_plugin": "design-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design-skills/1.0.0/skills/interaction-design/SKILL.md",
+      "trigger": "Состояния интерактивных элементов",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design-skills:accessibility-audit",
+      "source_plugin": "design-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design-skills/1.0.0/skills/accessibility-audit/SKILL.md",
+      "trigger": "Аудит WCAG 2.2",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "design-skills:ux-research",
+      "source_plugin": "design-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design-skills/1.0.0/skills/ux-research/SKILL.md",
+      "trigger": "Проверка решений на пользователях",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "figma:figma-use",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-use/SKILL.md",
+      "trigger": "Операции с содержимым Figma",
+      "condition": "Прочитать перед каждым соответствующим вызовом Figma"
+    },
+    {
+      "role": "designer",
+      "name": "figma:figma-create-new-file",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-create-new-file/SKILL.md",
+      "trigger": "Новый файл Figma/FigJam",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "figma:figma-generate-design",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-generate-design/SKILL.md",
+      "trigger": "Экран в редактируемом дизайне",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "figma:figma-spec",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-spec/SKILL.md",
+      "trigger": "Спецификация в Figma",
+      "condition": null
+    },
+    {
+      "role": "designer",
+      "name": "figma:figma-generate-diagram",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-generate-diagram/SKILL.md",
+      "trigger": "Диаграмма в FigJam",
+      "condition": "Прочитать перед каждым generate_diagram"
+    },
+    {
+      "role": "frontend",
+      "name": "frontend-design:frontend-design",
+      "source_plugin": "frontend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/frontend-design/1.1.1/skills/frontend-design/SKILL.md",
+      "trigger": "Создание или переработка интерфейса",
+      "condition": null
+    },
+    {
+      "role": "frontend",
+      "name": "ui-styling",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/ui-styling/SKILL.md",
+      "trigger": "UI на Radix/shadcn/Tailwind при таком стеке",
+      "condition": null
+    },
+    {
+      "role": "frontend",
+      "name": "ui-ux-pro-max",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/ui-ux-pro-max/SKILL.md",
+      "trigger": "Визуальные и UX-паттерны",
+      "condition": null
+    },
+    {
+      "role": "frontend",
+      "name": "figma:figma-design-to-code",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-design-to-code/SKILL.md",
+      "trigger": "Реализация макета Figma",
+      "condition": "Прочитать до get_design_context"
+    },
+    {
+      "role": "frontend",
+      "name": "figma:figma-code-connect",
+      "source_plugin": "figma",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/figma/2.2.157/skills/figma-code-connect/SKILL.md",
+      "trigger": "Соответствие компонентов Figma и кода",
+      "condition": null
+    },
+    {
+      "role": "frontend",
+      "name": "design:accessibility-review",
+      "source_plugin": "design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/design/1.2.0/skills/accessibility-review/SKILL.md",
+      "trigger": "Аудит WCAG 2.1 AA",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:think-before-coding",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/think-before-coding/SKILL.md",
+      "trigger": "Подготовка backend-изменения",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:error-handling-as-design",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/error-handling-as-design/SKILL.md",
+      "trigger": "Контракты ошибок до happy path",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:data-modeling-discipline",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/data-modeling-discipline/SKILL.md",
+      "trigger": "Схема и жизненный цикл данных",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:query-discipline",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/query-discipline/SKILL.md",
+      "trigger": "Запросы и доступ к данным",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:idempotency-and-side-effects",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/idempotency-and-side-effects/SKILL.md",
+      "trigger": "Повторные запросы и побочные эффекты",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:performance-and-scaling",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/performance-and-scaling/SKILL.md",
+      "trigger": "Производительность и масштабирование",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:boring-by-default",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/boring-by-default/SKILL.md",
+      "trigger": "Выбор инфраструктуры",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:observability-by-default",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/observability-by-default/SKILL.md",
+      "trigger": "Логи, метрики и диагностика",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "backend-design:migration-safety",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/migration-safety/SKILL.md",
+      "trigger": "Изменение схемы данных",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "clean-architecture:entity",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/entity/SKILL.md",
+      "trigger": "Бизнес-правила сущности",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "clean-architecture:usecase",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/usecase/SKILL.md",
+      "trigger": "Прикладной сценарий",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "clean-architecture:gateway",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/gateway/SKILL.md",
+      "trigger": "Внешние сервисы и хранилища",
+      "condition": null
+    },
+    {
+      "role": "backend",
+      "name": "clean-architecture:controller",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/controller/SKILL.md",
+      "trigger": "Адаптация входного запроса",
+      "condition": null
+    },
+    {
+      "role": "test-engineer",
+      "name": "mattpocock-skills:tdd",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/tdd/SKILL.md",
+      "trigger": "Поведенческий red-тест перед реализацией",
+      "condition": "Сначала согласовать публичные границы тестов; затем RED→GREEN по срезам"
+    },
+    {
+      "role": "test-engineer",
+      "name": "engineering:testing-strategy",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/testing-strategy/SKILL.md",
+      "trigger": "Уровни тестирования и риски",
+      "condition": null
+    },
+    {
+      "role": "test-engineer",
+      "name": "backend-design:testing-with-discernment",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/testing-with-discernment/SKILL.md",
+      "trigger": "Отбор полезных backend-тестов",
+      "condition": null
+    },
+    {
+      "role": "test-engineer",
+      "name": "clean-architecture:test",
+      "source_plugin": "clean-architecture",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/it-algo-local/clean-architecture/1.0.0/skills/test/SKILL.md",
+      "trigger": "Тестирование архитектурных границ",
+      "condition": null
+    },
+    {
+      "role": "independent-qa",
+      "name": "qa-bug-hunter:qa-bug-hunter",
+      "source_plugin": "qa-bug-hunter",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/qa-bug-hunter/1.9.0/skills/qa-bug-hunter/SKILL.md",
+      "trigger": "Независимый поиск и воспроизведение дефектов",
+      "condition": "Свежий контекст; изолированные repro, постоянные исправления другой ролью"
+    },
+    {
+      "role": "independent-qa",
+      "name": "engineering:code-review",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/code-review/SKILL.md",
+      "trigger": "Проверка изменений",
+      "condition": null
+    },
+    {
+      "role": "independent-qa",
+      "name": "mattpocock-skills:code-review",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/code-review/SKILL.md",
+      "trigger": "Проверка изменений",
+      "condition": "Нужны спецификация, issue-tracker.md и корректная область diff"
+    },
+    {
+      "role": "backend",
+      "name": "mattpocock-skills:diagnosing-bugs",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/diagnosing-bugs/SKILL.md",
+      "trigger": "Сложная или нестабильная ошибка",
+      "condition": "Назначать разработчику; включает инструментирование, исправление и постоянную регрессию"
+    },
+    {
+      "role": "security",
+      "name": "backend-design:auth-and-authorization",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/auth-and-authorization/SKILL.md",
+      "trigger": "Авторизация и сессии",
+      "condition": null
+    },
+    {
+      "role": "security",
+      "name": "backend-design:security-discipline",
+      "source_plugin": "backend-design",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/backend-design/0.2.0/skills/security-discipline/SKILL.md",
+      "trigger": "Входные данные, права и backend-diff",
+      "condition": null
+    },
+    {
+      "role": "security",
+      "name": "review-security",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/review-security/SKILL.md",
+      "trigger": "Специализированное ревью безопасности",
+      "condition": "Нужен специальный runtime; проверить возможность запуска"
+    },
+    {
+      "role": "release",
+      "name": "engineering:deploy-checklist",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/deploy-checklist/SKILL.md",
+      "trigger": "Готовность перед выпуском",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "engineering:incident-response",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/incident-response/SKILL.md",
+      "trigger": "Сбой и разбор инцидента",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "engineering:documentation",
+      "source_plugin": "engineering",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/engineering/1.2.0/skills/documentation/SKILL.md",
+      "trigger": "Обновление документации",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "mattpocock-skills:resolving-merge-conflicts",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/engineering/resolving-merge-conflicts/SKILL.md",
+      "trigger": "Текущий merge/rebase-конфликт",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "mattpocock-skills:pr",
+      "source_plugin": "mattpocock-skills",
+      "path": "/Users/kreckeroff/.codex/plugins/cache/claude-cowork/mattpocock-skills/1.2.3/skills/in-progress/pr/SKILL.md",
+      "trigger": "Описание итогового PR",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "split-to-prs",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/split-to-prs/SKILL.md",
+      "trigger": "Разделение работы на обозримые PR",
+      "condition": null
+    },
+    {
+      "role": "release",
+      "name": "autopilot",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/autopilot/SKILL.md",
+      "trigger": "Поддержание PR готовым к merge",
+      "condition": "Проверить разрешённые внешние действия и последствия push"
+    },
+    {
+      "role": "release",
+      "name": "deploy-with-vercel",
+      "source_plugin": "local",
+      "path": "/Users/kreckeroff/.agents/skills/deploy-with-vercel/SKILL.md",
+      "trigger": "Выпуск в Vercel после настройки и разрешения",
+      "condition": "Нужно действующее подключение Vercel"
+    }
+  ]
+}
