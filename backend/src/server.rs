@@ -30,11 +30,16 @@ struct Server {
     origin: String,
 }
 
-pub(crate) async fn run(store: Store, port: u16) -> anyhow::Result<()> {
+pub(crate) async fn run(
+    store: Store,
+    bind_addr: Ipv4Addr,
+    port: u16,
+    public_host: &str,
+) -> anyhow::Result<()> {
     let registration = Registration::from_env()?;
     store.check_schema().await?;
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).await?;
-    let host = listener.local_addr()?.to_string();
+    let listener = TcpListener::bind(SocketAddrV4::new(bind_addr, port)).await?;
+    let host = format!("{public_host}:{}", listener.local_addr()?.port());
     let origin = format!("http://{host}");
     println!("Север · {origin}/");
     let state = Arc::new(Server {

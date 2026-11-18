@@ -15,6 +15,7 @@ mod workspace_http;
 use std::{
     env,
     io::{self, IsTerminal, Read},
+    net::Ipv4Addr,
     path::Path,
     process::ExitCode,
 };
@@ -72,7 +73,16 @@ async fn run() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "4121".to_owned())
                 .parse::<u16>()
                 .context("SEVER_PORT должен быть номером локального порта")?;
-            server::run(store, port).await
+            let bind_addr = env::var("SEVER_BIND_ADDR")
+                .unwrap_or_else(|_| Ipv4Addr::LOCALHOST.to_string())
+                .parse::<Ipv4Addr>()
+                .context("SEVER_BIND_ADDR должен быть адресом IPv4")?;
+            let host = env::var("SEVER_HTTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
+            ensure!(
+                matches!(host.as_str(), "127.0.0.1" | "localhost"),
+                "SEVER_HTTP_HOST принимает 127.0.0.1 или localhost"
+            );
+            server::run(store, bind_addr, port, &host).await
         }
         ["migrate"] => store.migrate().await,
         ["import-sqlite", path] => db::import::sqlite_to_postgres(&store, Path::new(path)).await,
