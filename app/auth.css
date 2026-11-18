@@ -80,6 +80,8 @@ input, button { font: inherit; }
 h1 { font-size: clamp(24px, 5vw, 30px); font-weight: 670; line-height: 1.2; letter-spacing: -.035em; }
 .auth-heading p { color: var(--muted); overflow-wrap: anywhere; }
 .auth-heading strong { color: var(--ink); font-weight: 650; }
+.auth-link { color: var(--accent); text-underline-offset: 3px; }
+.auth-hint { color: var(--muted); font-size: 13px; }
 
 form { display: grid; gap: 6px; min-width: 0; }
 label { font-size: 13px; font-weight: 620; }
@@ -111,7 +113,7 @@ input {
 .primary-action:not(:disabled):hover { background: var(--accent-hover); }
 .primary-action:disabled { cursor: wait; }
 
-:is(input, button):focus-visible, .form-error:focus {
+:is(input, button, .auth-link):focus-visible, .form-error:focus {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }

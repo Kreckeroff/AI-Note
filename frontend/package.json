@@ -1,0 +1,21 @@
+{
+  "name": "sever-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "build:server": "npm run build && SEVER_REQUIRE_REACT=1 cargo build --release --locked --manifest-path ../backend/Cargo.toml"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.8"
+  }
+}

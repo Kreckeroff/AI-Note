@@ -1,0 +1,198 @@
+export interface TenantLink {
+  id: string;
+  name: string;
+}
+
+export interface Tenant extends TenantLink {
+  role: 'member' | 'admin' | 'superadmin';
+  canCreate: boolean;
+}
+
+export interface Space {
+  id: string;
+  name: string;
+  ownerName: string;
+  isOwner: boolean;
+  tenantRole: Tenant['role'];
+  grantRole: 'viewer' | 'editor' | null;
+}
+
+export interface CatalogOptions {
+  q: string;
+  scope: 'all' | 'mine' | 'membership';
+  page: number;
+}
+
+export interface CatalogModel {
+  options: CatalogOptions;
+  rows: Space[];
+  total: number;
+  pages: number;
+  start: number;
+  end: number;
+}
+
+export interface WorkspaceModel {
+  tenant: Tenant;
+  tenants: TenantLink[];
+  accountName: string;
+  availableSpaces: Space[];
+  catalog: CatalogModel;
+}
+
+export interface Section {
+  id: string;
+  title: string;
+}
+
+export interface SectionFormModel {
+  operationId: string;
+  title: string;
+  error: string;
+  invalidName: boolean;
+  cancelTo: string;
+  action: string;
+  retryTo: string | null;
+}
+
+export interface SectionTreeModel {
+  sections: Section[];
+  selected: Section | null;
+  canCreateSection: boolean;
+  form: SectionFormModel | null;
+}
+
+export type AccountPageModel =
+  | {kind: 'signIn'; email: string; error: string; registrationEnabled: boolean; returnTo: string}
+  | {kind: 'registrationStart'; email: string; error: string}
+  | {kind: 'registrationRequested'}
+  | {kind: 'registrationComplete'; token: string; name: string; error: string}
+  | {kind: 'noTenant'; accountName: string; tenants: TenantLink[]};
+
+export type CreationPageModel = {
+  kind: 'createSpace';
+  workspace: WorkspaceModel;
+  operationId: string;
+  name: string;
+  error: string;
+  invalidName: boolean;
+  newForm: boolean;
+};
+
+export type WorkspacePageModel =
+  | {kind: 'catalog'; workspace: WorkspaceModel}
+  | {kind: 'catalogUnavailable'; retryTo: string}
+  | {kind: 'closedSpace'; workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}
+  | {kind: 'spaceNotFound'}
+  | {kind: 'sectionNotFound'}
+  | CreationPageModel;
+
+export type PageModel = AccountPageModel | WorkspacePageModel;
+
+type Fields = Record<string, unknown>;
+
+function fields(value: unknown): value is Fields {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function strings(value: Fields, ...keys: string[]): boolean {
+  return keys.every(key => typeof value[key] === 'string');
+}
+
+function hasUuid(value: unknown): boolean {
+  return typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(value);
+}
+
+function isRole(value: unknown): boolean {
+  return value === 'member' || value === 'admin' || value === 'superadmin';
+}
+
+function isTenantLink(value: unknown): value is Fields {
+  return fields(value) && hasUuid(value.id) && strings(value, 'name');
+}
+
+function isSpace(value: unknown): boolean {
+  return fields(value) && hasUuid(value.id) && strings(value, 'name', 'ownerName') &&
+    typeof value.isOwner === 'boolean' && isRole(value.tenantRole) &&
+    (value.grantRole === null || value.grantRole === 'viewer' || value.grantRole === 'editor');
+}
+
+function isList(value: unknown, predicate: (item: unknown) => boolean): boolean {
+  return Array.isArray(value) && value.every(predicate);
+}
+
+function isCount(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCatalog(value: unknown): boolean {
+  if (!fields(value) || !fields(value.options)) return false;
+  const {q, scope, page} = value.options;
+  return typeof q === 'string' && isCount(page) &&
+    (scope === 'all' || scope === 'mine' || scope === 'membership') &&
+    isList(value.rows, isSpace) && [value.total, value.pages, value.start, value.end].every(isCount);
+}
+
+function isWorkspace(value: unknown): boolean {
+  return fields(value) && isTenantLink(value.tenant) && isRole(value.tenant.role) &&
+    typeof value.tenant.canCreate === 'boolean' && strings(value, 'accountName') &&
+    isList(value.tenants, isTenantLink) && isList(value.availableSpaces, isSpace) && isCatalog(value.catalog);
+}
+
+function isSection(value: unknown): boolean {
+  return fields(value) && hasUuid(value.id) && strings(value, 'title');
+}
+
+function isWorkspacePath(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith('/workspace/');
+}
+
+function isSectionForm(value: unknown): boolean {
+  return fields(value) && hasUuid(value.operationId) && strings(value, 'title', 'error') &&
+    typeof value.invalidName === 'boolean' && isWorkspacePath(value.cancelTo) &&
+    isWorkspacePath(value.action) && (value.retryTo === null || isWorkspacePath(value.retryTo));
+}
+
+function isSectionTree(value: unknown): boolean {
+  return fields(value) && isList(value.sections, isSection) &&
+    (value.selected === null || isSection(value.selected)) && typeof value.canCreateSection === 'boolean' &&
+    (value.form === null || value.canCreateSection && isSectionForm(value.form));
+}
+
+function isPage(value: unknown): value is PageModel {
+  if (!fields(value)) return false;
+  switch (value.kind) {
+    case 'signIn':
+      return strings(value, 'email', 'error', 'returnTo') && typeof value.registrationEnabled === 'boolean';
+    case 'registrationStart':
+      return strings(value, 'email', 'error');
+    case 'registrationRequested':
+    case 'spaceNotFound':
+    case 'sectionNotFound':
+      return true;
+    case 'registrationComplete':
+      return strings(value, 'token', 'name', 'error');
+    case 'noTenant':
+      return strings(value, 'accountName') && isList(value.tenants, isTenantLink);
+    case 'catalog':
+      return isWorkspace(value.workspace);
+    case 'catalogUnavailable':
+      return strings(value, 'retryTo');
+    case 'closedSpace':
+      return isWorkspace(value.workspace) && isSpace(value.space) && isSectionTree(value.tree);
+    case 'createSpace':
+      return isWorkspace(value.workspace) && hasUuid(value.operationId) && strings(value, 'name', 'error') &&
+        typeof value.invalidName === 'boolean' && typeof value.newForm === 'boolean';
+    default:
+      return false;
+  }
+}
+
+export function readPage(source: string): PageModel | undefined {
+  try {
+    const parsed: unknown = JSON.parse(source);
+    return isPage(parsed) ? parsed : undefined;
+  } catch {
+    // The browser can still use the original HTML forms and links.
+  }
+}

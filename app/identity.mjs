@@ -2,14 +2,15 @@ import {createHash, randomBytes, randomUUID, scrypt, timingSafeEqual} from 'node
 import {promisify} from 'node:util';
 
 export const sessionLifetime = 12 * 60 * 60 * 1000;
+export const passwordMinLength = 15;
 export const passwordMaxLength = 128;
 export const emailMaxLength = 254;
+export const nameMaxLength = 120;
 // Use the same UnicodeSets-compatible pattern for HTML and server validation.
 const mailbox = String.raw`[a-zA-Z0-9.!#$%&'*+\x2f=?^_\x60\x7b\x7c\x7d~\x2d]{1,64}`;
 const domainLabel = String.raw`[a-zA-Z0-9](?:[a-zA-Z0-9\x2d]{0,61}[a-zA-Z0-9])?`;
 export const emailPattern = `(?=.{1,${emailMaxLength}}$)${mailbox}@${domainLabel}(?:\\.${domainLabel})+`;
 const emailValidator = new RegExp(`^(?:${emailPattern})$`, 'v');
-const passwordMinLength = 15;
 const scryptAsync = promisify(scrypt);
 const scryptParameters = {N: 2 ** 17, r: 8, p: 1, maxmem: 160 * 1024 * 1024};
 const hashLength = 32;
@@ -18,7 +19,7 @@ const identityAttemptLimit = 6;
 const serviceAttemptLimit = 48;
 const concurrentAttemptLimit = 4;
 
-function normalizeEmail(email) {
+export function normalizeEmail(email) {
   const address = email.trim();
   if (emailValidator.test(address)) return address.toLowerCase();
 }
@@ -35,23 +36,35 @@ function derivePassword(password, salt) {
   return scryptAsync(password, salt, hashLength, scryptParameters);
 }
 
-export async function provisionAccount(store, {email, name, password}) {
+export class AccountInputError extends Error {}
+
+export async function prepareAccount({email, name, password}) {
   email = normalizeEmail(email);
   name = name.trim();
-  if (!email) throw new Error('Укажите действительный адрес электронной почты.');
-  if (name.length === 0 || Array.from(name).length > 120 || /[\p{Cc}]/u.test(name)) {
-    throw new Error('Укажите имя длиной от 1 до 120 символов.');
+  if (!email) throw new AccountInputError('Укажите действительный адрес электронной почты.');
+  if (name.length === 0 || Array.from(name).length > nameMaxLength || /[\p{Cc}]/u.test(name)) {
+    throw new AccountInputError('Укажите имя длиной от 1 до 120 символов.');
   }
   if (!validPassword(password) || Array.from(password).length < passwordMinLength) {
-    throw new Error('Пароль должен содержать от 15 до 128 символов в одной строке.');
+    throw new AccountInputError('Пароль должен содержать от 15 до 128 символов в одной строке.');
   }
   const salt = randomBytes(16);
   const passwordHash = await derivePassword(password, salt);
-  const id = randomUUID();
-  if (!store.addAccount({id, email, name, salt, passwordHash})) {
+  return {id: randomUUID(), email, name, salt, passwordHash};
+}
+
+export async function provisionAccount(store, fields) {
+  const account = await prepareAccount(fields);
+  if (!store.addAccount(account)) {
     throw new Error('Учётная запись с такой почтой уже существует.');
   }
-  return id;
+  return account.id;
+}
+
+export function prepareSession(createdAt) {
+  const token = randomBytes(32).toString('base64url');
+  const session = {tokenDigest: digestToken(token), createdAt, expiresAt: createdAt + sessionLifetime};
+  return {token, session};
 }
 
 function createAttemptBudget() {
@@ -106,11 +119,9 @@ export function createIdentity(store, clock) {
         const actualHash = await derivePassword(password, salt);
         if (!timingSafeEqual(actualHash, passwordHash) || !account) return {outcome: 'invalid'};
 
-        const token = randomBytes(32).toString('base64url');
-        const createdAt = clock();
-        const expiresAt = createdAt + sessionLifetime;
-        store.deleteExpiredSessions(createdAt);
-        store.addSession({tokenDigest: digestToken(token), accountId: account.id, createdAt, expiresAt});
+        const {token, session} = prepareSession(clock());
+        store.deleteExpiredSessions(session.createdAt);
+        store.addSession({...session, accountId: account.id});
         return {outcome: 'accepted', token, accountId: account.id};
       } finally {
         budget.release();
