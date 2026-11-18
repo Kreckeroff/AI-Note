@@ -1,5 +1,6 @@
 mod account;
 mod client;
+mod editor;
 mod sections;
 mod workspace;
 
@@ -7,6 +8,7 @@ pub(crate) use account::{
     no_tenant, registration_complete, registration_requested, registration_start, sign_in,
 };
 pub(crate) use client::{BUNDLE as UI_BUNDLE, BUNDLE_PATH as UI_BUNDLE_PATH};
+pub(crate) use editor::page_edit_retry;
 pub(crate) use sections::{page_retry, section_retry};
 pub(crate) use workspace::{
     catalog, catalog_unavailable, closed_space, create_space, documents_unavailable,
@@ -71,16 +73,30 @@ fn page<'a>(
     } else {
         ""
     };
-    let client_json = model
-        .into()
-        .filter(|_| !UI_BUNDLE.is_empty())
-        .and_then(|model| match model.script_json() {
-            Ok(json) => Some(json),
-            Err(_) => {
-                eprintln!("page.ui_data.failed");
-                None
-            }
-        });
+    let model = model.into();
+    let can_save = match &model {
+        Some(ClientPage::ClosedSpace { tree, .. }) => {
+            tree.editor.as_ref().is_some_and(|form| form.can_save)
+        }
+        Some(ClientPage::PageEditRetry { editor }) => editor.can_save,
+        _ => false,
+    };
+    // Register the native submit handler before the parser exposes the form.
+    let editor_script = if can_save {
+        r#"<script src="/page-editor.js"></script>"#
+    } else {
+        ""
+    };
+    let client_json =
+        model
+            .filter(|_| !UI_BUNDLE.is_empty())
+            .and_then(|model| match model.script_json() {
+                Ok(json) => Some(json),
+                Err(_) => {
+                    eprintln!("page.ui_data.failed");
+                    None
+                }
+            });
     let (scripts, body) = if let Some(json) = client_json {
         let script = format!(r#"<script type="module" src="{UI_BUNDLE_PATH}"></script>"#);
         let shell = format!(
@@ -112,6 +128,7 @@ fn page<'a>(
     <title>{title} · Север</title>
     <link rel="stylesheet" href="/auth.css">
     {stylesheet}
+    {editor_script}
     {scripts}
   </head>
   <body>{body}</body>

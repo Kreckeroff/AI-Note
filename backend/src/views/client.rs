@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     db::{Page, Section, Space, Tenant},
-    sections::{NameForm, SectionScreen},
+    sections::{NameForm, PageEditorForm, PageReading, SectionScreen},
     workspace::{CatalogOptions, WorkspaceContext},
 };
 
@@ -55,6 +55,9 @@ pub(super) enum ClientPage<'a> {
         space: &'a Space,
         #[serde(serialize_with = "serialize_section_tree")]
         tree: &'a SectionScreen,
+    },
+    PageEditRetry {
+        editor: &'a PageEditorForm,
     },
     SpaceNotFound,
     SectionNotFound,
@@ -277,6 +280,8 @@ struct SectionTreeData<'a> {
     selected_page: Option<PageData<'a>>,
     can_create_page: bool,
     page_form: Option<NameFormData<'a>>,
+    reading: Option<&'a PageReading>,
+    editor: Option<&'a PageEditorForm>,
 }
 
 fn serialize_section_tree<S: Serializer>(
@@ -292,6 +297,8 @@ fn serialize_section_tree<S: Serializer>(
         selected_page: tree.selected_page.as_ref().map(PageData::from),
         can_create_page: tree.can_create_section,
         page_form: tree.page_form.as_ref().map(NameFormData::from),
+        reading: tree.reading.as_ref(),
+        editor: tree.editor.as_ref(),
     }
     .serialize(serializer)
 }

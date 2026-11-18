@@ -170,6 +170,7 @@ pub(crate) enum DocumentsTarget {
     NewSection,
     Sections,
     Page(Uuid),
+    EditPage(Uuid),
     NewPage(Uuid),
     Pages(Uuid),
 }
@@ -214,7 +215,14 @@ impl Route {
                             }
                         }
                     },
-                    Some("pages") => DocumentsTarget::Page(canonical_uuid(parts.next()?)?),
+                    Some("pages") => {
+                        let page = canonical_uuid(parts.next()?)?;
+                        match parts.next() {
+                            None => DocumentsTarget::Page(page),
+                            Some("edit") => DocumentsTarget::EditPage(page),
+                            _ => return None,
+                        }
+                    }
                     _ => return None,
                 };
                 Self::Documents(DocumentsRoute {
@@ -254,7 +262,9 @@ impl Route {
             self,
             Self::Collection(_)
                 | Self::Documents(DocumentsRoute {
-                    target: DocumentsTarget::Sections | DocumentsTarget::Pages(_),
+                    target: DocumentsTarget::Sections
+                        | DocumentsTarget::Pages(_)
+                        | DocumentsTarget::EditPage(_),
                     ..
                 })
         )
@@ -296,6 +306,10 @@ pub(crate) fn new_page_path(tenant: Uuid, space: Uuid, section: Uuid) -> String 
 
 pub(crate) fn page_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
     format!("{}/pages/{page}", space_path(tenant, space))
+}
+
+pub(crate) fn page_edit_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
+    format!("{}/edit", page_path(tenant, space, page))
 }
 
 pub(crate) fn section_form_path(

@@ -191,7 +191,7 @@ pub(super) async fn submit(
                 failure.status,
                 Selection {
                     section: Some(section),
-                    page: None,
+                    ..Selection::default()
                 },
                 Some(CreationDialog::Page(form)),
             )

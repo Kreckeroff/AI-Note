@@ -18,10 +18,11 @@ function Application({page}: {page: PageModel}) {
 }
 
 function hasNativeInteraction(container: HTMLElement): boolean {
-  if (container.querySelector('[data-workspace-choice][open]')) return true;
+  if (container.querySelector('[data-workspace-choice][open], [data-page-editor-pending]')) return true;
   if (container.contains(document.activeElement) && !document.activeElement?.id) return true;
-  return Array.from(container.querySelectorAll<HTMLInputElement>('input')).some(input =>
-    input.type !== 'hidden' && input.value !== input.defaultValue);
+  return Array.from(container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([type="hidden"]), textarea'))
+    .some(field => field.value !== field.defaultValue ||
+      field instanceof HTMLInputElement && field.checked !== field.defaultChecked);
 }
 
 function enhanceNative(container: HTMLElement) {
@@ -52,7 +53,7 @@ if (container && (!page || hasNativeInteraction(container))) {
     document.getElementById(activeId)?.focus({preventScroll: true});
   } else if (page.kind === 'catalog' && window.location.hash === '#create-space') {
     document.getElementById('create-space')?.focus();
-  } else if (page.kind === 'closedSpace' && ['#create-section', '#create-page'].includes(window.location.hash)) {
+  } else if (page.kind === 'closedSpace' && ['#create-section', '#create-page', '#edit-page'].includes(window.location.hash)) {
     document.getElementById(window.location.hash.slice(1))?.focus();
   }
 }

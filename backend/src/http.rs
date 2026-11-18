@@ -74,13 +74,23 @@ impl Form {
     }
 
     pub(crate) fn get(&self, name: &str) -> &str {
+        self.field(name).unwrap_or_default().unwrap_or_default()
+    }
+
+    pub(crate) fn field(&self, name: &str) -> Result<Option<&str>, &str> {
         let mut values = self
             .0
             .iter()
             .filter(|(key, _)| key == name)
             .map(|(_, value)| value.as_str());
-        let value = values.next().unwrap_or_default();
-        if values.next().is_some() { "" } else { value }
+        let Some(value) = values.next() else {
+            return Ok(None);
+        };
+        if values.next().is_some() {
+            Err(value)
+        } else {
+            Ok(Some(value))
+        }
     }
 }
 
@@ -105,7 +115,13 @@ pub(crate) fn form_error(error: FormError, wrong_encoding: &str) -> Response {
 }
 
 pub(crate) async fn read_form(request: Request) -> Result<Form, FormError> {
-    const MAX_FORM_BYTES: usize = 4096;
+    read_form_bounded(request, 4096).await
+}
+
+pub(crate) async fn read_form_bounded(
+    request: Request,
+    max_bytes: usize,
+) -> Result<Form, FormError> {
     let encoding = single_header(request.headers(), header::CONTENT_TYPE)
         .and_then(|value| value.split(';').next())
         .map(str::trim)
@@ -113,7 +129,7 @@ pub(crate) async fn read_form(request: Request) -> Result<Form, FormError> {
     if !encoding {
         return Err(FormError::WrongEncoding);
     }
-    let bytes = to_bytes(request.into_body(), MAX_FORM_BYTES)
+    let bytes = to_bytes(request.into_body(), max_bytes)
         .await
         .map_err(|error| {
             if error

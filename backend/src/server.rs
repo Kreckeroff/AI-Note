@@ -200,13 +200,16 @@ impl Server {
         }
         let route = route.expect("workspace route checked");
         let identify = identity::identify(&self.store, request.headers());
-        let principal = if let Route::Documents(
-            documents @ DocumentsRoute {
-                target: DocumentsTarget::Pages(section),
-                ..
-            },
-        ) = route
-        {
+        let preserve_submission = match route {
+            Route::Documents(
+                documents @ DocumentsRoute {
+                    target: DocumentsTarget::Pages(_) | DocumentsTarget::EditPage(_),
+                    ..
+                },
+            ) if request.method() == Method::POST => Some(documents),
+            _ => None,
+        };
+        let principal = if let Some(documents) = preserve_submission {
             // Reserve time to read the submitted form if the session lookup is unavailable.
             match tokio::time::timeout(Duration::from_secs(2), identify).await {
                 Ok(Ok(principal)) => principal,
@@ -218,13 +221,27 @@ impl Server {
                         Err(_) => eprintln!("page.auth.failed category=timeout"),
                         Ok(Ok(_)) => unreachable!(),
                     }
-                    return Ok(sections_http::retry_before_authorization(
-                        documents,
-                        section,
-                        &self.origin,
-                        request,
-                    )
-                    .await);
+                    return Ok(match documents.target {
+                        DocumentsTarget::Pages(section) => {
+                            sections_http::retry_before_authorization(
+                                documents,
+                                section,
+                                &self.origin,
+                                request,
+                            )
+                            .await
+                        }
+                        DocumentsTarget::EditPage(page) => {
+                            sections_http::retry_page_edit_before_authorization(
+                                documents,
+                                page,
+                                &self.origin,
+                                request,
+                            )
+                            .await
+                        }
+                        _ => unreachable!("only document form writes use early session timeout"),
+                    });
                 }
             }
         } else {
@@ -340,6 +357,7 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
         "/spaces.css" => (CSS, include_str!("../../app/spaces.css")),
         "/sign-in.mjs" => (JS, include_str!("../../app/sign-in.mjs")),
         "/space-form.mjs" => (JS, include_str!("../../app/space-form.mjs")),
+        "/page-editor.js" => (JS, include_str!("../../app/page-editor.js")),
         "/workspace-menu.mjs" => (JS, include_str!("../../app/workspace-menu.mjs")),
         views::UI_BUNDLE_PATH if !views::UI_BUNDLE.is_empty() => (JS, views::UI_BUNDLE),
         _ => return None,
@@ -466,6 +484,225 @@ mod tests {
         Ok(())
     }
 
+    #[sqlx::test]
+    #[ignore = "requires an isolated PostgreSQL DATABASE_URL with database creation privileges"]
+    async fn page_editor_preserves_text_on_conflict_and_rechecks_access(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let store = Store::from_test_pool(pool.clone());
+        let tenant = Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 'Север')")
+            .bind(tenant)
+            .execute(&pool)
+            .await?;
+        let mut sessions = Vec::new();
+        for (email, role) in [
+            ("writer@example.test", "member"),
+            ("editor@example.test", "admin"),
+        ] {
+            let account = identity::prepare_account(email, email, "long test passphrase").unwrap();
+            store.add_account(&account).await?;
+            sqlx::query("INSERT INTO tenant_memberships VALUES ($1, $2, $3, 'active', true, true)")
+                .bind(tenant)
+                .bind(account.id)
+                .bind(role)
+                .execute(&pool)
+                .await?;
+            let (token, session) = identity::prepare_session(identity::now_ms());
+            store.add_session(account.id, &session).await?;
+            sessions.push((account.id, token));
+        }
+        let [(owner, owner_token), (editor, editor_token)] = &sessions[..] else {
+            unreachable!()
+        };
+        let CreateSpace::Saved(space) = store
+            .create_space(tenant, *owner, Uuid::new_v4(), "Документы")
+            .await?
+        else {
+            unreachable!()
+        };
+        let CreateSection::Saved(section) = store
+            .create_section(tenant, space, *owner, Uuid::new_v4(), "Тексты")
+            .await?
+        else {
+            unreachable!()
+        };
+        let mut pages = Vec::new();
+        for title in ["Рабочая страница", "Другая страница"] {
+            let CreatePage::Saved(page) = store
+                .create_page(CreatePageInput {
+                    tenant_id: tenant,
+                    space_id: space,
+                    section_id: section,
+                    account_id: *owner,
+                    operation_id: Uuid::new_v4(),
+                    title,
+                })
+                .await?
+            else {
+                unreachable!()
+            };
+            pages.push(page);
+        }
+
+        let server = Arc::new(Server {
+            store,
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let send = |token: &str, uri: &str, form: Option<(&str, &str, Option<&str>)>| {
+            let mut request = Request::builder()
+                .uri(uri)
+                .header(header::HOST, &server.host)
+                .header(header::COOKIE, format!("sever_session={token}"));
+            let body = if let Some((text, revision, rebase)) = form {
+                request = request
+                    .method(Method::POST)
+                    .header(header::ORIGIN, &server.origin)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+                let mut form = url::form_urlencoded::Serializer::new(String::new());
+                form.append_pair("text", text)
+                    .append_pair("revision", revision);
+                if let Some(rebase) = rebase {
+                    form.append_pair("baseRevision", rebase);
+                }
+                Body::from(form.finish())
+            } else {
+                Body::empty()
+            };
+            dispatch(State(server.clone()), request.body(body).unwrap())
+        };
+        let page = pages[0];
+        let path = format!("/workspace/{tenant}/spaces/{space}/pages/{page}");
+        let query = "?q=docs&scope=mine&page=4";
+        let read_to = format!("{path}{query}");
+        let edit_to = format!("{path}/edit{query}");
+        let other_to = format!("/workspace/{tenant}/spaces/{space}/pages/{}/edit", pages[1]);
+
+        let empty = send(owner_token, &edit_to, None).await;
+        assert_eq!(empty.status(), StatusCode::OK);
+        let body = response_text(empty).await?;
+        let script = body
+            .find(r#"<script src="/page-editor.js"></script>"#)
+            .unwrap();
+        assert!(script < body.find("data-native-page-editor").unwrap());
+        if let Some(bundle) = body.find(r#"src="/sever-ui.js""#) {
+            assert!(script < bundle);
+        }
+        assert!(body.contains("name=\"revision\" value=\"1\""));
+        assert!(body.contains("autofocus>\n</textarea>"));
+        let read_only = send(editor_token, &edit_to, None).await;
+        assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
+
+        let seeded = "Текст из тестовых данных.";
+        sqlx::query("UPDATE pages SET markdown = $1, content_revision = 7 WHERE tenant_id = $2 AND space_id = $3 AND id = $4")
+            .bind(seeded).bind(tenant).bind(space).bind(pages[1]).execute(&pool).await?;
+        let seeded_form = send(owner_token, &other_to, None).await;
+        assert_eq!(seeded_form.status(), StatusCode::OK);
+        assert!(response_text(seeded_form).await?.contains(seeded));
+        let stale_same = send(owner_token, &other_to, Some((seeded, "6", None))).await;
+        let current_same = send(owner_token, &other_to, Some((seeded, "7", None))).await;
+        let stored: (i64, String) = sqlx::query_as(
+            "SELECT content_revision, markdown FROM pages WHERE tenant_id = $1 AND space_id = $2 AND id = $3",
+        ).bind(tenant).bind(space).bind(pages[1]).fetch_one(&pool).await?;
+        assert_eq!(
+            (stale_same.status(), current_same.status(), stored),
+            (
+                StatusCode::SEE_OTHER,
+                StatusCode::SEE_OTHER,
+                (7, seeded.to_owned())
+            ),
+        );
+        let other = send(owner_token, &other_to, Some(("другой секрет", "7", None))).await;
+        assert_eq!(other.status(), StatusCode::SEE_OTHER);
+        let value = "\r\n  # Абзац\r\n\r\n<script>*буквально*</script> \\🙂  \r\n";
+        for _ in 0..2 {
+            let saved = send(owner_token, &edit_to, Some((value, "1", None))).await;
+            assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+            assert_eq!(
+                saved.headers()[header::LOCATION],
+                format!("{read_to}#edit-page")
+            );
+        }
+        let read = send(editor_token, &read_to, None).await;
+        assert_eq!(read.status(), StatusCode::OK);
+        let body = response_text(read).await?;
+        let escaped = "\n  # Абзац\n\n&lt;script&gt;*буквально*&lt;/script&gt; \\🙂  \n";
+        assert!(body.contains(escaped));
+        assert!(!body.contains("другой секрет"));
+        assert!(!body.contains("id=\"edit-page\""));
+
+        let draft = "Мой <черновик>";
+        let conflict = send(owner_token, &edit_to, Some((draft, "1", None))).await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let body = response_text(conflict).await?;
+        assert!(body.contains(escaped));
+        assert!(body.contains("Мой &lt;черновик&gt;"));
+        assert!(body.contains("name=\"baseRevision\" value=\"2\""));
+        let rebased = send(owner_token, &edit_to, Some((draft, "1", Some("2")))).await;
+        assert_eq!(rebased.status(), StatusCode::SEE_OTHER);
+
+        sqlx::query("INSERT INTO space_grants VALUES ($1, $2, $3, 'editor')")
+            .bind(tenant)
+            .bind(space)
+            .bind(editor)
+            .execute(&pool)
+            .await?;
+        let editable = send(editor_token, &edit_to, None).await;
+        assert_eq!(editable.status(), StatusCode::OK);
+        let body = response_text(editable).await?;
+        assert!(body.contains("name=\"revision\" value=\"3\""));
+
+        let limit = "🙂".repeat(30_000);
+        let too_long = send(
+            editor_token,
+            &edit_to,
+            Some((&format!("{limit}🙂"), "3", None)),
+        )
+        .await;
+        assert_eq!(too_long.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            response_text(too_long)
+                .await?
+                .contains(&format!("{limit}🙂"))
+        );
+        let saved = send(editor_token, &edit_to, Some((&limit, "3", None))).await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+
+        sqlx::query("UPDATE space_grants SET role = 'viewer' WHERE tenant_id = $1 AND space_id = $2 AND account_id = $3")
+            .bind(tenant).bind(space).bind(editor).execute(&pool).await?;
+        let forbidden = send(editor_token, &edit_to, Some((draft, "4", None))).await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let body = response_text(forbidden).await?;
+        assert!(body.contains("Мой &lt;черновик&gt;"));
+        assert!(body.contains("autofocus readonly"));
+        assert!(!body.contains("/page-editor.js"));
+        assert!(!body.contains(&limit));
+
+        sqlx::query("UPDATE tenant_memberships SET status = 'inactive', is_current = false WHERE tenant_id = $1 AND account_id = $2")
+            .bind(tenant).bind(editor).execute(&pool).await?;
+        let denied = send(editor_token, &edit_to, Some((draft, "4", None))).await;
+        let missing_to = format!(
+            "/workspace/{tenant}/spaces/{space}/pages/{}/edit",
+            Uuid::new_v4()
+        );
+        let missing = send(owner_token, &missing_to, Some((draft, "4", None))).await;
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let denied = response_text(denied).await?;
+        assert!(!denied.contains("Рабочая страница"));
+        assert!(!denied.contains("черновик"));
+        assert_eq!(denied, response_text(missing).await?);
+        Ok(())
+    }
+
+    async fn response_text(response: Response) -> anyhow::Result<String> {
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+        Ok(std::str::from_utf8(&bytes)?.to_owned())
+    }
+
     #[tokio::test]
     async fn unavailable_document_read_offers_a_local_retry() {
         const PATH: &str = concat!(
@@ -494,6 +731,53 @@ mod tests {
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains("Не удалось открыть документы"));
         assert!(body.contains(&format!(r#"href="{PATH}?scope=mine&amp;page=3""#)));
+    }
+
+    #[tokio::test]
+    async fn edit_post_preserves_draft_if_session_lookup_is_unavailable() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333/edit",
+        );
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let request = |origin: &str| {
+            let form = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("text", "\nЧерновик <текста>\n\nПовтор")
+                .append_pair("revision", "8")
+                .finish();
+            Request::builder()
+                .uri(format!("{PATH}?scope=mine"))
+                .method(Method::POST)
+                .header(header::HOST, &server.host)
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+                .body(Body::from(form))
+                .unwrap()
+        };
+        let response = dispatch(State(server.clone()), request(&server.origin)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains("Черновик &lt;текста&gt;\n\nПовтор"));
+        assert!(body.contains(r#"name="revision" value="8""#));
+        assert!(body.contains(&format!(r#"action="{PATH}?scope=mine""#)));
+        assert!(!body.contains("Дерево пространства"));
+
+        let foreign = dispatch(State(server.clone()), request("http://foreign.test")).await;
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(foreign.into_body(), 4096).await.unwrap();
+        assert!(!std::str::from_utf8(&body).unwrap().contains("Черновик"));
     }
 
     #[tokio::test]

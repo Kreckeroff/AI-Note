@@ -1,8 +1,10 @@
 mod configuration;
 pub(crate) mod import;
+mod page_text;
 mod pages;
 mod sections;
 
+pub(crate) use page_text::{PageAddress, PageText, SavePageText};
 pub(crate) use pages::{CreatePage, CreatePageInput, Page};
 pub(crate) use sections::{CreateSection, Section, SectionTree};
 

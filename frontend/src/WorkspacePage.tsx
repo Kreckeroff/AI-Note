@@ -2,6 +2,7 @@ import {Catalog, accessLabel} from './Catalog';
 import {CreateSpaceDialog} from './CreateSpaceDialog';
 import {DocumentCreationDialog} from './DocumentCreationDialog';
 import {Icon} from './Icon';
+import {PageEditor} from './PageEditor';
 import {WorkspacePicker} from './WorkspacePicker';
 import type {SectionTreeModel, Space, WorkspaceModel, WorkspacePageModel} from './model';
 import {newPagePath, newSectionPath, pagePath, sectionPath, spacePath, spacesPath, withOptions} from './routes';
@@ -27,7 +28,7 @@ function WorkspaceHeader({workspace, space}: {workspace: WorkspaceModel; space?:
 
 function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}) {
   const {tenant, catalog: {options}} = workspace;
-  const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage} = tree;
+  const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage, reading, editor} = tree;
   const catalogHref = withOptions(spacesPath(tenant.id), options);
   const spaceHref = withOptions(spacePath(tenant.id, space.id), options);
   const createSectionHref = newSectionPath(tenant.id, space.id, options, selected?.id);
@@ -102,7 +103,20 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
               </div>
             </div>
           </header>
-          {selectedPage ? <p className="document-empty">Пока здесь ничего нет.</p> : (
+          {selectedPage ? (
+            editor ? <PageEditor form={editor} /> : (
+              <>
+                {reading?.editTo && (
+                  <a className="space-action space-secondary document-edit-link" id="edit-page" href={reading.editTo}>
+                    Редактировать
+                  </a>
+                )}
+                {reading?.text ?
+                  <div className="document-text">{reading.text}</div> :
+                  <p className="document-empty">Пока здесь ничего нет.</p>}
+              </>
+            )
+          ) : (
             <>
               {currentPages.length ? (
                 <ul className="section-pages-list">
@@ -171,6 +185,14 @@ export function WorkspacePage({page}: {page: WorkspacePageModel}) {
   if (page.kind === 'catalogUnavailable' || page.kind === 'documentsUnavailable' || page.kind === 'spaceNotFound' ||
       page.kind === 'sectionNotFound' || page.kind === 'pageNotFound') {
     return <WorkspaceError page={page} />;
+  }
+  if (page.kind === 'pageEditRetry') {
+    return (
+      <main className="space-shell">
+        <h1>Редактирование страницы</h1>
+        <PageEditor form={page.editor} />
+      </main>
+    );
   }
   if (page.kind === 'closedSpace') {
     const {workspace, space, tree} = page;

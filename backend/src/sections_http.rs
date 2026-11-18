@@ -1,17 +1,23 @@
+mod editor;
 mod pages;
 
+pub(crate) use editor::retry_page_edit_before_authorization;
 pub(crate) use pages::retry_before_authorization;
 
 use std::time::Duration;
 
-use axum::{extract::Request, http::StatusCode, response::Response};
+use axum::{
+    extract::Request,
+    http::{Method, StatusCode},
+    response::Response,
+};
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
     db::{CreateSection, Page, Principal, Section, SectionTree, Space, Store},
     http::{self, html, plain, redirect},
-    sections::{NameForm, SectionScreen},
+    sections::{NameForm, PageEditorForm, PageReading, SectionScreen},
     views,
     workspace::{
         CatalogOptions, DocumentsRoute, DocumentsTarget, WorkspaceContext, canonical_uuid,
@@ -88,6 +94,8 @@ struct DocumentsPage {
 struct Selection {
     section: Option<Section>,
     page: Option<Page>,
+    reading: Option<PageReading>,
+    editor: Option<PageEditorForm>,
 }
 
 enum CreationDialog {
@@ -103,6 +111,15 @@ impl DocumentsPage {
             .iter()
             .find(|section| section.id == id)
             .cloned()
+    }
+
+    fn select_page(&self, id: Uuid) -> Option<Selection> {
+        let page = self.tree.pages.iter().find(|entry| entry.id == id)?.clone();
+        Some(Selection {
+            section: self.section(Some(page.section_id)),
+            page: Some(page),
+            ..Selection::default()
+        })
     }
 
     fn render(
@@ -124,6 +141,8 @@ impl DocumentsPage {
             can_create_section: self.tree.can_create,
             form,
             page_form,
+            reading: selected.reading,
+            editor: selected.editor,
         };
         html(
             status,
@@ -155,6 +174,9 @@ pub(crate) async fn handle(
         DocumentsTarget::Pages(section) => {
             return Ok(pages::submit(store, &nav, section, principal, origin, request).await);
         }
+        DocumentsTarget::EditPage(id) if request.method() == Method::POST => {
+            return Ok(editor::submit(store, &nav, id, principal, origin, request).await);
+        }
         _ => {}
     }
     let Some(page) = load(store, &nav, principal).await? else {
@@ -175,7 +197,7 @@ pub(crate) async fn handle(
                 StatusCode::OK,
                 Selection {
                     section: Some(section),
-                    page: None,
+                    ..Selection::default()
                 },
                 None,
             ),
@@ -200,26 +222,13 @@ pub(crate) async fn handle(
                 StatusCode::OK,
                 Selection {
                     section: selected,
-                    page: None,
+                    ..Selection::default()
                 },
                 Some(CreationDialog::Section(form)),
             )
         }
-        DocumentsTarget::Page(id) => {
-            let Some(selected) = page.tree.pages.iter().find(|entry| entry.id == id).cloned()
-            else {
-                record(principal.id, route, "not-found");
-                return Ok(not_found(route.target));
-            };
-            let section = page.section(Some(selected.section_id));
-            page.render(
-                StatusCode::OK,
-                Selection {
-                    section,
-                    page: Some(selected),
-                },
-                None,
-            )
+        DocumentsTarget::Page(id) | DocumentsTarget::EditPage(id) => {
+            return editor::open(store, &nav, id, principal, page).await;
         }
         DocumentsTarget::NewPage(section_id) => {
             let Some(section) = page.section(Some(section_id)) else {
@@ -235,7 +244,7 @@ pub(crate) async fn handle(
                 StatusCode::OK,
                 Selection {
                     section: Some(section),
-                    page: None,
+                    ..Selection::default()
                 },
                 Some(CreationDialog::Page(form)),
             )
@@ -375,7 +384,7 @@ async fn submit(
                 failure.status,
                 Selection {
                     section: selected,
-                    page: None,
+                    ..Selection::default()
                 },
                 Some(CreationDialog::Section(form)),
             )
@@ -400,7 +409,7 @@ async fn submit(
 fn not_found(target: DocumentsTarget) -> Response {
     let page = match target {
         DocumentsTarget::Space => views::space_not_found(),
-        DocumentsTarget::Page(_) => views::page_not_found(),
+        DocumentsTarget::Page(_) | DocumentsTarget::EditPage(_) => views::page_not_found(),
         _ => views::section_not_found(),
     };
     html(StatusCode::NOT_FOUND, page)
@@ -411,6 +420,7 @@ fn record(account: Uuid, route: DocumentsRoute, outcome: &str) {
         DocumentsTarget::Space => "space.open",
         DocumentsTarget::Sections => "section.create",
         DocumentsTarget::Pages(_) => "page.create",
+        DocumentsTarget::EditPage(_) => "page.edit",
         DocumentsTarget::Page(_) | DocumentsTarget::NewPage(_) => "page.open",
         _ => "section.open",
     };

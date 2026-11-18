@@ -26,6 +26,7 @@ app/**
 !app/spaces.css
 !app/sign-in.mjs
 !app/space-form.mjs
+!app/page-editor.js
 !app/workspace-menu.mjs
 
 **/.env

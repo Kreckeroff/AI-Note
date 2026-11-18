@@ -400,7 +400,7 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
                     section = html(&section.title),
                     page = html(&page.title),
                 ),
-                r#"<p class="document-empty">Пока здесь ничего нет.</p>"#.to_owned(),
+                super::editor::page_contents(tree),
             )
         }
         (Some(section), None) => {
@@ -696,6 +696,8 @@ mod tests {
             can_create_section: false,
             form: None,
             page_form: None,
+            reading: None,
+            editor: None,
         };
         let reader = closed_space(&workspace, &space, &tree);
         assert!(reader.contains("Этот раздел пока пуст"));
@@ -748,6 +750,8 @@ mod tests {
                 "pages": [],
                 "selectedPage": null,
                 "pageForm": null,
+                "reading": null,
+                "editor": null,
                 "form": {
                     "operationId": operation_id,
                     "title": form.title,

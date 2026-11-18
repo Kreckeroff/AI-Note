@@ -61,6 +61,24 @@ export interface DocumentFormModel {
   retryTo: string | null;
 }
 
+export interface PageReadingModel {
+  text: string;
+  editTo: string | null;
+}
+
+interface PageRevision {
+  text: string;
+  revision: string;
+}
+
+export interface PageEditorForm extends PageRevision {
+  action: string;
+  cancelTo: string | null;
+  error: string | null;
+  conflict: PageRevision | null;
+  canSave: boolean;
+}
+
 export interface SectionTreeModel {
   sections: Section[];
   selected: Section | null;
@@ -70,6 +88,8 @@ export interface SectionTreeModel {
   selectedPage: DocumentPage | null;
   canCreatePage: boolean;
   pageForm: DocumentFormModel | null;
+  reading: PageReadingModel | null;
+  editor: PageEditorForm | null;
 }
 
 export type AccountPageModel =
@@ -93,6 +113,7 @@ export type WorkspacePageModel =
   | {kind: 'catalog'; workspace: WorkspaceModel}
   | {kind: 'catalogUnavailable'; retryTo: string}
   | {kind: 'documentsUnavailable'; retryTo: string}
+  | {kind: 'pageEditRetry'; editor: PageEditorForm}
   | {kind: 'closedSpace'; workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}
   | {kind: 'spaceNotFound'}
   | {kind: 'sectionNotFound'}
@@ -169,14 +190,33 @@ function isDocumentForm(value: unknown): boolean {
     isWorkspacePath(value.action) && (value.retryTo === null || isWorkspacePath(value.retryTo));
 }
 
+function isPageReading(value: unknown): boolean {
+  return fields(value) && strings(value, 'text') &&
+    (value.editTo === null || isWorkspacePath(value.editTo));
+}
+
+function isPageRevision(value: unknown): value is Fields {
+  return fields(value) && strings(value, 'text', 'revision');
+}
+
+function isPageEditorForm(value: unknown): boolean {
+  return isPageRevision(value) && isWorkspacePath(value.action) &&
+    (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
+    (value.error === null || typeof value.error === 'string') &&
+    (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean';
+}
+
 function isSectionTree(value: unknown): boolean {
   if (!fields(value)) return false;
   const hasSelectedSection = isSection(value.selected);
+  const hasSelectedPage = hasSelectedSection && isDocumentPage(value.selectedPage);
   return isList(value.sections, isSection) && (value.selected === null || hasSelectedSection) &&
     typeof value.canCreateSection === 'boolean' && (value.form === null || value.canCreateSection && isDocumentForm(value.form)) &&
-    isList(value.pages, isDocumentPage) && (value.selectedPage === null || hasSelectedSection && isDocumentPage(value.selectedPage)) &&
+    isList(value.pages, isDocumentPage) && (value.selectedPage === null || hasSelectedPage) &&
     typeof value.canCreatePage === 'boolean' &&
-    (value.pageForm === null || hasSelectedSection && value.canCreatePage && isDocumentForm(value.pageForm));
+    (value.pageForm === null || hasSelectedSection && value.canCreatePage && isDocumentForm(value.pageForm)) &&
+    (value.reading === null || hasSelectedPage && isPageReading(value.reading)) &&
+    (value.editor === null || hasSelectedPage && isPageEditorForm(value.editor));
 }
 
 function isPage(value: unknown): value is PageModel {
@@ -200,6 +240,8 @@ function isPage(value: unknown): value is PageModel {
     case 'catalogUnavailable':
     case 'documentsUnavailable':
       return strings(value, 'retryTo');
+    case 'pageEditRetry':
+      return isPageEditorForm(value.editor);
     case 'closedSpace':
       return isWorkspace(value.workspace) && isSpace(value.space) && isSectionTree(value.tree);
     case 'createSpace':

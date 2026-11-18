@@ -11,7 +11,7 @@ WORKDIR /build
 COPY backend/Cargo.toml backend/Cargo.lock backend/build.rs ./backend/
 COPY backend/migrations/ ./backend/migrations/
 COPY backend/src/ ./backend/src/
-COPY app/auth.css app/spaces.css app/sign-in.mjs app/space-form.mjs app/workspace-menu.mjs ./app/
+COPY app/auth.css app/spaces.css app/sign-in.mjs app/space-form.mjs app/page-editor.js app/workspace-menu.mjs ./app/
 COPY --from=frontend /build/frontend/dist/ ./frontend/dist/
 RUN SEVER_REQUIRE_REACT=1 cargo build --release --locked --manifest-path backend/Cargo.toml
 

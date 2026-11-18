@@ -137,6 +137,42 @@
 .section-pages-list .space-action span { min-width: 0; }
 .page-create-link { margin-top: 16px; }
 .document-empty { margin-top: 24px; color: var(--muted); }
+.document-edit-link { margin-top: 18px; }
+.document-text { margin-top: 24px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.page-editor { margin-top: 24px; gap: 14px; }
+.page-editor .form-error { margin: 0; overflow-wrap: anywhere; }
+.page-editor-columns { display: grid; gap: 16px; min-width: 0; }
+.page-editor-columns-conflict { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+.page-editor-field, .page-editor-current { display: grid; grid-template-rows: auto 1fr; gap: 7px; min-width: 0; }
+.page-editor-field textarea, .page-editor-current-text {
+  min-width: 0;
+  min-height: 180px;
+  max-height: min(440px, 62svh);
+  padding: 12px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--control-radius);
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.page-editor-field textarea { width: 100%; resize: vertical; }
+.page-editor-field textarea[aria-invalid="true"] { border-color: var(--error); }
+.page-editor-current h2 { margin: 0; font-size: 13px; font-weight: 620; }
+.page-editor-current-text { border-color: var(--line); background: var(--raised); overflow: auto; }
+.page-editor :is(textarea, .page-editor-current-text):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.page-editor-rebase { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.page-editor-rebase input { flex: none; width: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--accent); }
+.page-editor-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; }
+.page-editor-actions .primary-action { margin: 0; }
+.page-editor-actions :is(button:disabled, [aria-disabled="true"]) { opacity: .65; }
+.page-editor-actions button:disabled { cursor: default; }
+.page-editor-status { margin-inline-end: auto; color: var(--muted); font-size: 13px; }
+.page-editor-status:empty { margin: 0; }
 
 .space-dialog {
   position: fixed;
@@ -186,6 +222,7 @@
   .catalog-row > svg { grid-column: 2; grid-row: 1 / 4; }
   .documents-shell { grid-template-columns: minmax(0, 1fr); }
   .documents-tree { border: 0; border-bottom: 1px solid var(--line); }
+  .page-editor-columns-conflict { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 420px) {
   .dock-tenant > span { max-width: 23vw; }
