@@ -2,12 +2,16 @@ use std::fmt::Write;
 
 use crate::{
     db::{PageContentFormat, PageCover, PageHistory, PageRevisionSnapshot},
-    sections::CoverView,
+    sections::{CoverView, PageAttachmentView},
     workspace::{page_history_path, page_path},
 };
 use uuid::Uuid;
 
-use super::{PageAssets, editor::cover_art, html, page};
+use super::{
+    PageAssets,
+    editor::{attachment_list, cover_art},
+    html, page,
+};
 
 pub(crate) struct Links {
     pub preview: bool,
@@ -53,6 +57,10 @@ impl Links {
 
     fn cover(&self, number: i64) -> String {
         format!("{}/{number}/cover", self.history)
+    }
+
+    fn attachment(&self, number: i64, id: Uuid) -> String {
+        format!("{}/{number}/attachments/{id}", self.history)
     }
 
     fn compare_path(&self) -> String {
@@ -241,10 +249,25 @@ pub(crate) fn snapshot(
         PageContentFormat::Literal => "Простой текст",
         PageContentFormat::Markdown => "Markdown",
     };
+    let attachments = if snapshot.attachments.is_empty() {
+        String::new()
+    } else {
+        let files: Vec<_> = snapshot
+            .attachments
+            .iter()
+            .cloned()
+            .map(|file| {
+                let url = links.attachment(snapshot.revision, file.id);
+                PageAttachmentView::at_url(file, url, true)
+            })
+            .collect();
+        attachment_list(&files)
+    };
     let content = format!(
         r#"{confirmation}
         <section aria-labelledby="history-cover"><h2 id="history-cover">Обложка</h2>{}</section>
-        <section aria-labelledby="history-markdown"><h2 id="history-markdown">Исходный Markdown</h2><p>Формат — {format}</p>{}</section>"#,
+        <section aria-labelledby="history-markdown"><h2 id="history-markdown">Исходный Markdown</h2><p>Формат — {format}</p>{}</section>
+        {attachments}"#,
         cover(links, snapshot),
         source_block(&snapshot.source)
     );
@@ -274,7 +297,7 @@ fn confirmation_form(links: &Links, number: i64, current: i64, error: Option<&st
         r#"<section aria-labelledby="history-restore">
  <h2 id="history-restore">Восстановить редакцию {number}</h2>
  {error}
- <p>Текущая редакция — {current}. Название, текст и обложка редакции {number} будут опубликованы как новая редакция.</p>
+ <p>Текущая редакция — {current}. Название, текст, обложка и вложения редакции {number} будут опубликованы как новая редакция.</p>
  {}
 </section>"#,
         restore_form(links, number, current, "Подтвердить восстановление"),
@@ -570,6 +593,13 @@ mod tests {
             source: String::from("  source"),
             format: PageContentFormat::Markdown,
             cover: PageCover::None,
+            attachments: vec![crate::db::Attachment {
+                id: Uuid::nil(),
+                name: "Текст < 5.txt".to_owned(),
+                size: 20,
+                image: false,
+                publication: None,
+            }],
         };
         let history = PageHistory {
             current_revision: 5,
@@ -582,6 +612,8 @@ mod tests {
         assert!(preview.contains("&lt;snapshot&gt;"));
         assert!(preview.contains("/revisions/5?preview=1\">К текущей странице"));
         assert!(preview.contains("history-page-sidebar"));
+        assert!(preview.contains("Текст &lt; 5.txt"));
+        assert!(preview.contains("/revisions/3/attachments/00000000-0000-0000-0000-000000000000"));
 
         let comparison = super::comparison(&links, &snapshot, &snapshot, &history);
         assert!(comparison.contains("id=\"history-compare-choices\""));

@@ -42,3 +42,16 @@ test('unchanged operations preserve the redo branch but a new edit replaces it',
   assert.equal(history.step('redo'), undefined);
   assert.deepEqual(history.step('undo'), frame('а'));
 });
+
+test('attachment-only operations and image insertion preserve the complete draft through undo and redo', () => {
+  const history = createDraftHistory();
+  const before = {...frame('Текст'), attachments: {files: [], added: [], removed: []}};
+  const withFile = {...before, attachments: {files: [{id:'image'}], added:['image'], removed:[]}};
+  const withImage = {...frame('Текст и картинка'), attachments: withFile.attachments};
+  history.record(before, withFile);
+  history.record(withFile, withImage);
+  assert.deepEqual(history.step('undo'), withFile);
+  assert.deepEqual(history.step('undo'), before);
+  assert.deepEqual(history.step('redo'), withFile);
+  assert.deepEqual(history.step('redo'), withImage);
+});

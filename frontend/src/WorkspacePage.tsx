@@ -4,6 +4,7 @@ import {CreateSpaceDialog} from './CreateSpaceDialog';
 import {DocumentCreationDialog} from './DocumentCreationDialog';
 import {Icon} from './Icon';
 import {PageEditor} from './PageEditor';
+import {PageAttachmentList} from './editor/PageAttachmentList';
 import {WorkspacePicker} from './WorkspacePicker';
 import {PageCoverArt} from './editor/CoverGallery';
 import {PageHistoryPanel} from './editor/PageHistoryPanel';
@@ -146,6 +147,7 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
                 ) : reading?.renderedHtml === null && reading.text ? (
                   <div className="document-text">{reading.text}</div>
                 ) : <p className="document-empty">Пока здесь ничего нет.</p>}
+                {reading?.attachments && <PageAttachmentList files={reading.attachments} />}
               </>
             )
           ) : (

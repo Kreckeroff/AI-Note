@@ -10,13 +10,13 @@ use uuid::Uuid;
 
 use crate::{
     cover_image::COVER_IMAGE_CONTENT_TYPE,
-    db::{PageAddress, PageHistory, RestorePageRevision, Store},
+    db::{AttachmentLookup, PageAddress, PageHistory, RestorePageRevision, Store},
     http::{self, Form, FormError, html, plain, redirect},
     views::{self, history as view},
     workspace::{DocumentsRoute, HistoryTarget, revision_number},
 };
 
-use super::{FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, cover_unauthenticated};
+use super::{FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, attachments, cover_unauthenticated};
 
 const OPEN_FORM: &str = "Откройте подтверждение восстановления в «Севере».";
 const INVALID_REVISION: &str = "Укажите корректный номер редакции.";
@@ -146,6 +146,19 @@ pub(super) async fn handle(
                 return Ok(cover_unauthenticated(true));
             };
             Ok(([(header::CONTENT_TYPE, COVER_IMAGE_CONTENT_TYPE)], bytes).into_response())
+        }
+        HistoryTarget::Attachment {
+            revision,
+            id,
+            inline,
+        } => {
+            attachments::download(
+                store,
+                address,
+                AttachmentLookup::Revision { revision, id },
+                inline,
+            )
+            .await
         }
         HistoryTarget::Compare => compare(store, address, &links, &query).await,
         HistoryTarget::Restore(revision) => {

@@ -2,9 +2,9 @@ use std::fmt::Write as _;
 
 use crate::text::{escape_html as html, js_trim};
 
-use super::inline;
+use super::{AttachmentUrl, inline};
 
-pub(super) fn render(source: &str) -> String {
+pub(super) fn render(source: &str, attachment_url: &AttachmentUrl<'_>) -> String {
     let lines: Vec<_> = source.split('\n').collect();
     let mut output = String::new();
     let mut index = 0;
@@ -18,7 +18,7 @@ pub(super) fn render(source: &str) -> String {
             continue;
         }
         if let Some(alignments) = table_divider(&lines, index) {
-            index = render_table(&mut output, &lines, index, &alignments);
+            index = render_table(&mut output, &lines, index, &alignments, attachment_url);
             continue;
         }
         if js_trim(line) == "---"
@@ -30,17 +30,25 @@ pub(super) fn render(source: &str) -> String {
             output.push_str("<hr>");
         } else if let Some(item) = list_item(line) {
             if item.indent == 0 {
-                index = render_list(&mut output, &lines, index, item);
+                index = render_list(&mut output, &lines, index, item, attachment_url);
                 continue;
             }
             let _ = write!(output, "<pre>{}</pre>", html(line));
         } else if let Some((level, body)) = heading(line) {
-            let _ = write!(output, "<h{level}>{}</h{level}>", inline(body, false));
+            let _ = write!(
+                output,
+                "<h{level}>{}</h{level}>",
+                inline(body, false, attachment_url)
+            );
         } else if let Some(body) = line.strip_prefix('>') {
             let body = body.strip_prefix([' ', '\t']).unwrap_or(body);
-            let _ = write!(output, "<blockquote>{}</blockquote>", inline(body, false));
+            let _ = write!(
+                output,
+                "<blockquote>{}</blockquote>",
+                inline(body, false, attachment_url)
+            );
         } else {
-            let _ = write!(output, "<p>{}</p>", inline(line, false));
+            let _ = write!(output, "<p>{}</p>", inline(line, false, attachment_url));
         }
         index += 1;
     }
@@ -166,6 +174,7 @@ fn render_list<'a>(
     lines: &[&'a str],
     mut index: usize,
     mut item: ListItem<'a>,
+    attachment_url: &AttachmentUrl<'_>,
 ) -> usize {
     let mut frames: Vec<ListFrame> = Vec::new();
     loop {
@@ -210,11 +219,11 @@ fn render_list<'a>(
                 let _ = write!(
                     output,
                     " <span id=\"markdown-task-{index}\">{}</span>",
-                    inline(body, false)
+                    inline(body, false, attachment_url)
                 );
             }
         } else {
-            let _ = write!(output, "<li>{}", inline(item.body, false));
+            let _ = write!(output, "<li>{}", inline(item.body, false, attachment_url));
         }
         index += 1;
         let Some(next) = lines.get(index).and_then(|line| list_item(line)) else {
@@ -313,6 +322,7 @@ fn render_table(
     lines: &[&str],
     start: usize,
     alignments: &[Alignment],
+    attachment_url: &AttachmentUrl<'_>,
 ) -> usize {
     let last = start
         + 2
@@ -333,12 +343,12 @@ fn render_table(
         return last;
     };
     output.push_str("<div class=\"markdown-table-scroll\"><table><thead>");
-    render_table_row(output, &rows[0], alignments, true);
+    render_table_row(output, &rows[0], alignments, true, attachment_url);
     output.push_str("</thead>");
     if rows.len() > 1 {
         output.push_str("<tbody>");
         for row in &rows[1..] {
-            render_table_row(output, row, alignments, false);
+            render_table_row(output, row, alignments, false, attachment_url);
         }
         output.push_str("</tbody>");
     }
@@ -346,7 +356,13 @@ fn render_table(
     last
 }
 
-fn render_table_row(output: &mut String, row: &[&str], alignments: &[Alignment], header: bool) {
+fn render_table_row(
+    output: &mut String,
+    row: &[&str],
+    alignments: &[Alignment],
+    header: bool,
+    attachment_url: &AttachmentUrl<'_>,
+) {
     let (tag, scope) = if header {
         ("th", " scope=\"col\"")
     } else {
@@ -358,7 +374,7 @@ fn render_table_row(output: &mut String, row: &[&str], alignments: &[Alignment],
             output,
             "<{tag}{scope}{}>{}</{tag}>",
             alignment.attribute(),
-            inline(cell, true)
+            inline(cell, true, attachment_url)
         );
     }
     output.push_str("</tr>");

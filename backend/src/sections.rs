@@ -2,7 +2,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    db::{Page, PageContentFormat, PageCover, Section},
+    db::{Attachment, Page, PageContentFormat, PageCover, Section},
     markdown::RenderedMarkdown,
     workspace::page_cover_image_path,
 };
@@ -27,6 +27,29 @@ pub(crate) struct PageReading {
     pub edit_to: Option<String>,
     pub history_to: Option<String>,
     pub cover: CoverView,
+    pub attachments: Vec<PageAttachmentView>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PageAttachmentView {
+    pub id: Uuid,
+    pub name: String,
+    pub bytes: i64,
+    pub download_to: Option<String>,
+    pub image_to: Option<String>,
+}
+
+impl PageAttachmentView {
+    pub(crate) fn at_url(attachment: Attachment, path: String, downloadable: bool) -> Self {
+        Self {
+            id: attachment.id,
+            name: attachment.name,
+            bytes: attachment.size,
+            image_to: attachment.image.then(|| format!("{path}/image")),
+            download_to: downloadable.then_some(path),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -85,11 +108,19 @@ pub(crate) struct PageEditorForm {
     pub cover_base: Option<String>,
     pub cover_changed: bool,
     pub cover_upload_to: Option<String>,
+    pub attachments: Vec<PageAttachmentView>,
+    pub attachment_draft: Option<Uuid>,
+    pub attachment_upload_to: Option<String>,
+    pub attachment_added: Vec<Uuid>,
+    pub attachment_removed: Vec<Uuid>,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PageEditConflict {
     pub text: String,
+    pub source: String,
+    pub content_format: PageContentFormat,
     pub revision: String,
     pub cover: CoverView,
 }

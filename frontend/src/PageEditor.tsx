@@ -4,9 +4,12 @@ import {Icon} from './Icon';
 import {coverLabel, CoverConflictOptions, CoverGallery, PageCoverArt} from './editor/CoverGallery';
 import {DraftDialogs, type DialogValue} from './editor/DraftDialogs';
 import {createDraftHistory, type DraftEditKind, type DraftFrame, type DraftHistoryDirection} from './editor/draftHistory';
-import {applyLink, pasteMarkdown, type EditorChange} from './editor/editorChanges';
+import {applyLink, attachmentRanges, insertAttachmentImage, pasteMarkdown, removeAttachmentReferences, type EditorChange} from './editor/editorChanges';
 import {ListStyleMenu} from './editor/ListStyleMenu';
 import type {SourceRange} from './editor/markdownModel';
+import {PageAttachmentDialog, type AttachmentCompletion, type AttachmentDialogRequest} from './editor/PageAttachmentDialog';
+import {PageAttachmentList} from './editor/PageAttachmentList';
+import {addDraftAttachment, removeDraftAttachment, type AttachmentDraft, type PageAttachment} from './editor/pageAttachments';
 import {chooseCoverDraft, resolveCoverDraft, type CoverChoice, type CoverDraft, type CoverView} from './editor/pageCover';
 import {
   applySourceCommand, decodeLegacyText, RichMarkdownEditor,
@@ -26,6 +29,9 @@ const tools = [
 ] as const;
 
 type DialogRequest = ({kind: 'link'; label: string} | {kind: 'paste'}) & {range: SourceRange};
+type EditorFrame = DraftFrame & {attachments: AttachmentDraft};
+type EditorDraft = Omit<EditorFrame, 'selection'>;
+type AttachmentRequest = AttachmentDialogRequest & {range: SourceRange; previousSelection: SourceRange};
 
 function moveToolbarFocus(event: KeyboardEvent<HTMLDivElement>) {
   const direction = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1};
@@ -44,9 +50,12 @@ function moveToolbarFocus(event: KeyboardEvent<HTMLDivElement>) {
 
 export function PageEditor({form}: {form: PageEditorForm}) {
   const {action, cancelTo, revision, error, conflict, canSave} = form;
-  const [draft, setDraft] = useState({source: form.source, contentFormat: form.contentFormat});
+  const [draft, setDraft] = useState<EditorDraft>(() => ({
+    source: form.source, contentFormat: form.contentFormat, textBase: form.textBase,
+    attachments: {files:form.attachments ?? [], added:form.attachmentAdded ?? [], removed:form.attachmentRemoved ?? []},
+  }));
   const [editorMode, setEditorMode] = useState(form.editorMode);
-  const [activeTool, setActiveTool] = useState<EditorCommand | 'source' | 'list-options' | 'link'>('heading');
+  const [activeTool, setActiveTool] = useState<EditorCommand | 'source' | 'list-options' | 'link' | 'image'>('heading');
   const [saving, setSaving] = useState(false);
   const [clientError, setClientError] = useState('');
   const [rebase, setRebase] = useState(false);
@@ -59,12 +68,15 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const [coverOpen, setCoverOpen] = useState(false);
   const coverButton = useRef<HTMLButtonElement>(null);
   const [dialog, setDialog] = useState<DialogRequest>();
-  const [history] = useState(createDraftHistory);
+  const [attachmentDialog, setAttachmentDialog] = useState<AttachmentRequest>();
+  const attachmentTrigger = useRef<HTMLButtonElement>(null);
+  const attachmentOpener = useRef<HTMLElement | null>(null);
+  const [history] = useState(() => createDraftHistory<EditorFrame>());
   const input = useRef<HTMLTextAreaElement>(null);
   const rich = useRef<RichMarkdownEditorHandle>(null);
   const focusRange = useRef<SourceRange | undefined>(undefined);
   const rawBeforeInput = useRef<SourceRange | undefined>(undefined);
-  const composing = useRef<DraftFrame | undefined>(undefined);
+  const composing = useRef<EditorFrame | undefined>(undefined);
   const submitting = useRef(false);
   const sourceMode = editorMode === 'source';
   const visibleError = clientError || error;
@@ -74,7 +86,10 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const hasCover = Boolean(cover.preview && cover.preview.value !== 'none');
   const showCover = hasCover || canSave && (form.cover !== undefined || form.coverUploadTo != null);
   const coverConflictPending = cover.requiresChoice && coverChoice === null;
-  const textStillUnchanged = form.textBase && form.textUnchanged && draft.source === form.source && draft.contentFormat === form.contentFormat;
+  const supportsAttachments = Boolean(form.attachmentDraft && form.attachmentUploadTo);
+  const attachments = draft.attachments;
+  const changedAttachments = attachments.added.length + attachments.removed.length > 0;
+  const textStillUnchanged = draft.textBase && form.textUnchanged && draft.source === form.source && draft.contentFormat === form.contentFormat;
 
   function restoreSelection(range?: SourceRange) {
     if (sourceMode) {
@@ -86,10 +101,10 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   }
 
   useLayoutEffect(() => {
-    if (dialog || !focusRange.current) return;
+    if (dialog || attachmentDialog || !focusRange.current) return;
     restoreSelection(focusRange.current);
     focusRange.current = undefined;
-  }, [dialog, sourceMode]);
+  }, [dialog, attachmentDialog, sourceMode]);
 
   useLayoutEffect(() => { restoreSelection(); }, []);
 
@@ -111,12 +126,12 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   }
 
   function applyEdit(change: EditorChange, before: SourceRange, kind: DraftEditKind = 'atomic') {
-    record({source: change.source, contentFormat: change.legacy ? 'literal' : 'markdown'}, before,
+    record({...draft, source: change.source, contentFormat: change.legacy ? 'literal' : 'markdown'}, before,
       {start: change.start, end: change.end}, kind);
   }
 
   function sourceDraft(source: string): typeof draft {
-    return source === draft.source ? draft : {source, contentFormat: source === form.source ? form.contentFormat : 'markdown'};
+    return source === draft.source ? draft : {...draft, source, contentFormat: source === form.source ? form.contentFormat : 'markdown'};
   }
 
   function selection(): SourceRange {
@@ -129,7 +144,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     const frame = history.step(direction);
     if (!frame) return;
     flushSync(() => {
-      setDraft({source: frame.source, contentFormat: frame.contentFormat});
+      setDraft({source: frame.source, contentFormat: frame.contentFormat, attachments: frame.attachments, textBase: frame.textBase});
       setClientError('');
     });
     restoreSelection(frame.selection);
@@ -202,8 +217,74 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     coverButton.current?.focus({preventScroll: true});
   }
 
+  function openAttachment(request: AttachmentDialogRequest, range?: SourceRange) {
+    if (readOnly || submitting.current) return;
+    const previousSelection = selection();
+    const active = document.activeElement;
+    attachmentOpener.current = active instanceof HTMLElement ? active : null;
+    history.separate();
+    setAttachmentDialog({...request, previousSelection, range:range ?? previousSelection});
+  }
+
+  function dropAttachment(id: string, previousSelection: SourceRange) {
+    const next = removeDraftAttachment(attachments, id);
+    const change = removeAttachmentReferences(draft.source, draft.contentFormat === 'literal', previousSelection, id);
+    record({...draft, source:change.source, contentFormat:change.legacy ? 'literal' : 'markdown', attachments:next},
+      previousSelection, {start:change.start, end:change.end}, 'atomic');
+  }
+
+  function removeAttachment(file: Pick<PageAttachment, 'id' | 'name'>) {
+    const references = attachmentRanges(draft.source, draft.contentFormat === 'literal', file.id).length;
+    if (references) openAttachment({kind:'remove', file, references});
+    else {
+      dropAttachment(file.id, selection());
+      attachmentTrigger.current?.focus({preventScroll:true});
+    }
+  }
+
+  function completeAttachment(completion: AttachmentCompletion): boolean {
+    if (!attachmentDialog || readOnly) return false;
+    const {range, previousSelection} = attachmentDialog;
+    if (completion.kind === 'remove') {
+      dropAttachment(completion.id, previousSelection);
+      attachmentOpener.current = attachmentTrigger.current;
+      return true;
+    }
+    const next = addDraftAttachment(attachments, completion.file);
+    if (completion.kind === 'add') {
+      record({...draft, attachments:next}, previousSelection, previousSelection, 'atomic');
+      return true;
+    }
+    const change = insertAttachmentImage(draft.source, draft.contentFormat === 'literal', range, completion.file.id, completion.alt);
+    if (change.source === draft.source) return false;
+    const after = {start:change.start, end:change.end};
+    record({...draft, source:change.source, contentFormat:'markdown', attachments:next}, previousSelection, after, 'atomic');
+    focusRange.current = after;
+    return true;
+  }
+
+  function dismissAttachment() {
+    const opener = attachmentOpener.current;
+    if (!focusRange.current) {
+      if (opener?.closest('#page-text') && attachmentDialog) focusRange.current = attachmentDialog.previousSelection;
+      else (opener?.isConnected ? opener : attachmentTrigger.current)?.focus({preventScroll:true});
+    }
+    setAttachmentDialog(undefined);
+  }
+
+  function chooseRebase(next: boolean) {
+    setRebase(next);
+    if (!next || !textStillUnchanged || !attachments.removed.length || conflict?.source === undefined || !conflict.contentFormat) return;
+    const before = selection();
+    const change = removeAttachmentReferences(conflict.source, conflict.contentFormat === 'literal', {start:0,end:0}, attachments.removed);
+    if (change.source !== conflict.source) {
+      // Dropping the old fingerprint makes this a deliberate write even when the cleanup reproduces the old text.
+      record({...draft, source:change.source, contentFormat:'markdown', textBase:null}, before, change, 'atomic');
+    }
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
-    if (!canSave || submitting.current || conflict && (!rebase || coverConflictPending)) {
+    if (!canSave || submitting.current || attachmentDialog || conflict && (!rebase || coverConflictPending)) {
       event.preventDefault();
       return;
     }
@@ -243,9 +324,14 @@ export function PageEditor({form}: {form: PageEditorForm}) {
       <input type="hidden" name="text" value={draft.source} />
       <input type="hidden" name="contentFormat" value={draft.contentFormat} />
       <input type="hidden" name="editorMode" value={editorMode} />
-      {form.textBase && <input type="hidden" name="textBase" value={form.textBase} />}
+      {draft.textBase && <input type="hidden" name="textBase" value={draft.textBase} />}
       {cover.base !== null && <input type="hidden" name="coverBase" value={cover.base} />}
       {cover.cover !== null && <input type="hidden" name="cover" value={cover.cover} />}
+      {form.attachmentDraft && changedAttachments && <>
+        <input type="hidden" name="attachmentDraft" value={form.attachmentDraft} />
+        <input type="hidden" name="attachmentAdd" value={attachments.added.join(',')} />
+        <input type="hidden" name="attachmentRemove" value={attachments.removed.join(',')} />
+      </>}
       {visibleError && <p className="form-error" id="page-editor-error" role="alert">{visibleError}</p>}
       {showCover && <div className={`page-cover-slot${hasCover ? ' page-cover-slot-filled' : ''}`}>
         {hasCover && <div className="page-cover-preview">
@@ -273,6 +359,10 @@ export function PageEditor({form}: {form: PageEditorForm}) {
         })}
         <button data-markdown-tool="" type="button" disabled={readOnly} tabIndex={activeTool === 'link' ? 0 : -1}
           onFocus={() => setActiveTool('link')} onClick={openLink}>Ссылка</button>
+        {supportsAttachments && <button data-markdown-tool="" type="button" disabled={readOnly} aria-haspopup="dialog"
+          tabIndex={activeTool === 'image' ? 0 : -1} onFocus={() => setActiveTool('image')} onClick={() => openAttachment({kind:'image'})}>
+          <Icon name="image" />Изображение
+        </button>}
         <button data-markdown-tool="" className="page-source-toggle" type="button" aria-pressed={sourceMode} aria-controls="page-text"
           tabIndex={!canSave || activeTool === 'source' ? 0 : -1} disabled={saving}
           onFocus={() => setActiveTool('source')}
@@ -317,6 +407,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           ) : (
             <RichMarkdownEditor ref={rich} id="page-text" source={draft.source} legacy={draft.contentFormat === 'literal'}
               onChange={applyEdit} readOnly={readOnly} describedBy={describedBy} onHistory={stepHistory}
+              attachments={attachments.files} onInsertAttachmentImage={supportsAttachments ? range => openAttachment({kind:'image'}, range) : undefined}
               onPasteMarkdown={range => {
                 history.separate();
                 setDialog({kind: 'paste', range});
@@ -339,6 +430,11 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           </section>
         )}
       </div>
+      {(form.attachments || supportsAttachments) && <PageAttachmentList files={attachments.files} controls={canSave && form.attachmentDraft ? {
+        disabled:readOnly || !supportsAttachments, staged:attachments.added, uploadRef:attachmentTrigger,
+        onUpload:() => openAttachment({kind:'upload'}), onInsert:file => openAttachment({kind:'image', select:file.id}),
+        onRemove:removeAttachment,
+      } : undefined} />}
       {cover.requiresChoice && conflict?.cover && <CoverConflictOptions draft={coverDraft.cover} published={conflict.cover}
         choice={coverChoice} disabled={readOnly} onChoice={setCoverChoice} />}
       {conflict && textStillUnchanged && <p className="space-hint">Текст в черновике не менялся. После сохранения останется актуальный текст.</p>}
@@ -346,7 +442,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
         <label className="page-editor-rebase">
           <input type="checkbox" name="baseRevision" value={conflict.revision} checked={rebase}
             onClick={event => { if (submitting.current) event.preventDefault(); }}
-            onChange={event => setRebase(event.currentTarget.checked)} />
+            onChange={event => chooseRebase(event.currentTarget.checked)} />
           Использовать эту версию как основу
         </label>
       )}
@@ -366,6 +462,9 @@ export function PageEditor({form}: {form: PageEditorForm}) {
       </div>
     </form>
     {coverOpen && <CoverGallery cover={cover.preview} uploadTo={form.coverUploadTo} onPick={chooseCover} onDismiss={closeCover} />}
+    {attachmentDialog && <PageAttachmentDialog request={attachmentDialog} files={attachments.files} uploadTo={form.attachmentUploadTo}
+      pendingCount={attachments.added.filter(id => !attachments.files.some(file => file.id === id)).length}
+      onComplete={completeAttachment} onDismiss={dismissAttachment} />}
     {dialog && <DraftDialogs request={dialog} onApply={applyDialog} onCancel={() => {
       const range = dialog.range;
       closeDialog(dialog.kind === 'paste' ? {start: range.end, end: range.end} : range);

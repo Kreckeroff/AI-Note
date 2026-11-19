@@ -1,12 +1,20 @@
+use std::collections::HashSet;
+
 use sha2::{Digest, Sha256};
-use sqlx::PgConnection;
+use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
-use crate::text::{markdown_to_text, normalize_line_endings, text_to_markdown};
+use crate::{
+    markdown::{attachment_reference_ids, contains_attachment_reference},
+    text::{markdown_to_text, normalize_line_endings, text_to_markdown},
+};
 
 use super::{
-    PageContentFormat, Store,
+    Attachment, AttachmentPatch, PageContentFormat, Store,
     page_access::{PageAddress, PageEditAccess, lock_page_for_edit},
+    page_attachments::{
+        CURRENT_ATTACHMENTS, apply_attachment_patch, decode_attachments, has_retired_attachments,
+    },
     page_cover::{CoverUpdate, PageCover, update_page_cover},
     page_history::{ensure_baseline, record_current_snapshot},
     sections::SPACE_ACCESS,
@@ -18,6 +26,7 @@ pub(crate) struct PageText {
     pub content_revision: i64,
     pub can_edit: bool,
     pub cover: PageCover,
+    pub attachments: Vec<Attachment>,
 }
 
 pub(crate) enum PageUpdate<'a> {
@@ -44,6 +53,9 @@ pub(crate) enum SavePageText {
     Forbidden,
     Conflict(PageText),
     InvalidCover,
+    InvalidAttachments,
+    AttachmentReferencesPresent,
+    AttachmentRetired,
     Saved,
 }
 
@@ -53,9 +65,27 @@ struct PageSaveReceipt {
 }
 
 impl PageSaveReceipt {
-    fn new(base_revision: i64, update: &PageUpdate<'_>, cover: CoverUpdate) -> Self {
+    fn new(
+        base_revision: i64,
+        update: &PageUpdate<'_>,
+        cover: CoverUpdate,
+        attachments: Option<AttachmentPatch<'_>>,
+    ) -> Self {
         let mut hash = Sha256::new();
-        hash.update(b"page-cover-save-v1\0");
+        if let Some(patch) = attachments {
+            hash.update(b"page-attachments-save-v1\0");
+            hash.update(patch.draft.as_bytes());
+            for list in [patch.add, patch.remove] {
+                let mut ids = list.to_vec();
+                ids.sort_unstable();
+                hash.update([ids.len() as u8]);
+                for id in ids {
+                    hash.update(id.as_bytes());
+                }
+            }
+        } else {
+            hash.update(b"page-cover-save-v1\0");
+        }
         match cover {
             CoverUpdate::Keep => hash.update(b"keep"),
             CoverUpdate::Set(cover) => hash.update(cover.value()),
@@ -118,18 +148,28 @@ impl PageSaveReceipt {
     }
 }
 
+#[derive(FromRow)]
+struct PageTextRow {
+    source: String,
+    is_markdown: bool,
+    content_revision: i64,
+    can_edit: bool,
+    theme: Option<String>,
+    asset_id: Option<Uuid>,
+    attachments: String,
+}
+
 async fn read(
     connection: &mut PgConnection,
     address: &PageAddress,
 ) -> Result<Option<PageText>, sqlx::Error> {
     let query = format!(
-        "SELECT p.markdown, p.content_is_markdown, p.content_revision, access.can_create AS can_edit,
-                c.theme, c.asset_id
+        "SELECT p.markdown AS source, p.content_is_markdown AS is_markdown, p.content_revision,
+                access.can_create AS can_edit, c.theme, c.asset_id, {CURRENT_ATTACHMENTS} AS attachments
          FROM ({SPACE_ACCESS}) access
          JOIN pages p ON (p.tenant_id, p.space_id, p.id) = ($1, $2, $4)
          LEFT JOIN page_covers c ON (c.tenant_id, c.space_id, c.page_id) = ($1, $2, $4)"
     );
-    type PageTextRow = (String, bool, i64, bool, Option<String>, Option<Uuid>);
     let row: Option<PageTextRow> = sqlx::query_as(&query)
         .bind(address.tenant)
         .bind(address.space)
@@ -137,15 +177,17 @@ async fn read(
         .bind(address.page)
         .fetch_optional(connection)
         .await?;
-    Ok(row.map(
-        |(source, is_markdown, content_revision, can_edit, theme, asset_id)| PageText {
-            source,
-            format: PageContentFormat::from_markdown(is_markdown),
-            content_revision,
-            can_edit,
-            cover: PageCover::from_storage(theme.as_deref(), asset_id),
-        },
-    ))
+    row.map(|row| {
+        Ok(PageText {
+            source: row.source,
+            format: PageContentFormat::from_markdown(row.is_markdown),
+            content_revision: row.content_revision,
+            can_edit: row.can_edit,
+            cover: PageCover::from_storage(row.theme.as_deref(), row.asset_id),
+            attachments: decode_attachments(&row.attachments)?,
+        })
+    })
+    .transpose()
 }
 
 impl Store {
@@ -163,15 +205,36 @@ impl Store {
         update: PageUpdate<'_>,
         cover: CoverUpdate,
     ) -> Result<SavePageText, sqlx::Error> {
+        self.save_page_with_attachments(address, base_revision, update, cover, None)
+            .await
+    }
+
+    pub(crate) async fn save_page_with_attachments(
+        &self,
+        address: &PageAddress,
+        base_revision: i64,
+        update: PageUpdate<'_>,
+        cover: CoverUpdate,
+        attachments: Option<AttachmentPatch<'_>>,
+    ) -> Result<SavePageText, sqlx::Error> {
         let mut tx = self.0.begin().await?;
         match lock_page_for_edit(&mut tx, address).await? {
             PageEditAccess::Missing => return Ok(SavePageText::Missing),
             PageEditAccess::Forbidden => return Ok(SavePageText::Forbidden),
             PageEditAccess::Allowed => {}
         }
-        let receipt = match (&update, cover) {
-            (PageUpdate::PlainText(_), CoverUpdate::Keep) => None,
-            _ => Some(PageSaveReceipt::new(base_revision, &update, cover)),
+        if attachments.is_some_and(|patch| !patch.is_valid()) {
+            return Ok(SavePageText::InvalidAttachments);
+        }
+        let attachments = attachments.filter(|patch| !patch.is_empty());
+        let receipt = match (&update, cover, attachments) {
+            (PageUpdate::PlainText(_), CoverUpdate::Keep, None) => None,
+            _ => Some(PageSaveReceipt::new(
+                base_revision,
+                &update,
+                cover,
+                attachments,
+            )),
         };
         if let Some(receipt) = &receipt
             && receipt.exists(&mut tx, address).await?
@@ -190,7 +253,8 @@ impl Store {
             CoverUpdate::Set(cover) => cover,
         };
         let text_matches = update.matches(&current);
-        if text_matches && selected == current.cover {
+        let attachment_change = attachments.filter(|patch| patch.changes(&current.attachments));
+        if text_matches && selected == current.cover && attachment_change.is_none() {
             // A current-base save can acknowledge the exact request without
             // incrementing the revision. A stale no-op must not claim a write.
             if let Some(receipt) = receipt
@@ -203,12 +267,6 @@ impl Store {
         }
         if current.content_revision != base_revision {
             return Ok(SavePageText::Conflict(current));
-        }
-        ensure_baseline(&mut tx, address).await?;
-        if selected != current.cover
-            && !update_page_cover(&mut tx, address, current.cover, selected).await?
-        {
-            return Ok(SavePageText::InvalidCover);
         }
         let (source, format) = match update {
             PageUpdate::PlainText(text) if !text_matches => (
@@ -223,6 +281,43 @@ impl Store {
                 current.format,
             ),
         };
+        if let Some(patch) = attachment_change
+            && format == PageContentFormat::Markdown
+        {
+            let removed: Vec<_> = patch
+                .remove
+                .iter()
+                .copied()
+                .filter(|id| current.attachments.iter().any(|asset| asset.id == *id))
+                .collect();
+            if contains_attachment_reference(&source, &removed) {
+                return Ok(SavePageText::AttachmentReferencesPresent);
+            }
+        }
+        if !text_matches && format == PageContentFormat::Markdown {
+            let mut new_references = attachment_reference_ids(&source);
+            new_references.retain(|id| !current.attachments.iter().any(|asset| asset.id == *id));
+            if !new_references.is_empty() && current.format == PageContentFormat::Markdown {
+                let previous: HashSet<_> = attachment_reference_ids(&current.source)
+                    .into_iter()
+                    .collect();
+                new_references.retain(|id| !previous.contains(id));
+            }
+            if has_retired_attachments(&mut tx, address, &new_references).await? {
+                return Ok(SavePageText::AttachmentRetired);
+            }
+        }
+        ensure_baseline(&mut tx, address).await?;
+        if let Some(patch) = attachment_change
+            && !apply_attachment_patch(&mut tx, address, &current.attachments, patch).await?
+        {
+            return Ok(SavePageText::InvalidAttachments);
+        }
+        if selected != current.cover
+            && !update_page_cover(&mut tx, address, current.cover, selected).await?
+        {
+            return Ok(SavePageText::InvalidCover);
+        }
         sqlx::query(
             "UPDATE pages SET markdown = $1, content_is_markdown = $2, content_revision = content_revision + 1
              WHERE tenant_id = $3 AND space_id = $4 AND id = $5",

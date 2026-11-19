@@ -6,6 +6,7 @@ use super::{
 };
 use crate::db::{
     page_access::{PageEditAccess, lock_page_for_edit},
+    page_attachments::restore_snapshot_attachments,
     page_cover::update_page_cover,
 };
 
@@ -107,6 +108,7 @@ impl Store {
         {
             return Err(sqlx::Error::RowNotFound);
         }
+        restore_snapshot_attachments(&mut tx, address, source_revision).await?;
         record_current_snapshot(
             &mut tx,
             address,

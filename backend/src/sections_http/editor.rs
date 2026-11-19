@@ -4,22 +4,25 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
-    DocumentNavigation, DocumentsPage, FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, load,
-    not_found, record,
+    DocumentNavigation, DocumentsPage, FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, attachments,
+    load, not_found, record,
 };
 use crate::{
     db::{
-        CoverUpdate, PageContentFormat, PageCover, PageText, PageUpdate, Principal, SavePageText,
-        Store,
+        Attachment, AttachmentPatch, CoverUpdate, PageAddress, PageContentFormat, PageCover,
+        PageText, PageUpdate, Principal, SavePageText, Store,
     },
     http::{self, Form, FormError, html, plain, redirect},
-    markdown::render_markdown,
-    sections::{CoverView, PageEditConflict, PageEditorForm, PageEditorMode, PageReading},
+    markdown::{render_markdown, render_markdown_with_attachments},
+    sections::{
+        CoverView, PageAttachmentView, PageEditConflict, PageEditorForm, PageEditorMode,
+        PageReading,
+    },
     text::{markdown_to_text, normalize_line_endings, text_to_markdown},
     views,
     workspace::{
-        DocumentsRoute, DocumentsTarget, page_cover_upload_path, page_edit_path, page_history_path,
-        page_path, with_options,
+        DocumentsRoute, DocumentsTarget, attachment_draft_path, canonical_uuid,
+        page_cover_upload_path, page_edit_path, page_history_path, page_path, with_options,
     },
 };
 
@@ -34,6 +37,59 @@ const CONFLICT: &str = "Текст страницы изменился. Срав
 const COVER_CONFLICT: &str =
     "Страница изменилась. Сравните опубликованный вариант со своим черновиком.";
 const INVALID_COVER: &str = "Не удалось выбрать обложку. Выберите её снова.";
+const INVALID_ATTACHMENTS: &str =
+    "Проверьте вложения и их размер. Можно сохранить до 20 файлов общим размером до 100 МБ.";
+const ATTACHMENT_REFERENCES: &str = "У удаляемого файла остались ссылки или вставки. Уберите их из текста и сохраните страницу снова.";
+const ATTACHMENT_RETIRED: &str =
+    "Один из файлов удалён в другой редакции. Уберите ссылки на него или прикрепите файл снова.";
+const FILE_RECOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(700);
+
+struct AttachmentChanges {
+    draft: Uuid,
+    add: Vec<Uuid>,
+    remove: Vec<Uuid>,
+}
+
+impl AttachmentChanges {
+    fn parse(form: &Form) -> Result<Option<Self>, ()> {
+        let draft = form.field("attachmentDraft").map_err(|_| ())?;
+        let add = form.field("attachmentAdd").map_err(|_| ())?;
+        let remove = form.field("attachmentRemove").map_err(|_| ())?;
+        if draft.is_none() && add.is_none() && remove.is_none() {
+            return Ok(None);
+        }
+        let draft = draft.and_then(canonical_uuid).ok_or(())?;
+        let add = attachment_ids(add.unwrap_or_default())?;
+        let remove = attachment_ids(remove.unwrap_or_default())?;
+        if add.iter().any(|id| remove.contains(id)) {
+            return Err(());
+        }
+        Ok(Some(Self { draft, add, remove }))
+    }
+
+    fn patch(&self) -> Option<AttachmentPatch<'_>> {
+        (!self.add.is_empty() || !self.remove.is_empty()).then_some(AttachmentPatch {
+            draft: self.draft,
+            add: &self.add,
+            remove: &self.remove,
+        })
+    }
+}
+
+fn attachment_ids(value: &str) -> Result<Vec<Uuid>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    for value in value.split(',') {
+        let id = canonical_uuid(value).ok_or(())?;
+        if result.len() == 20 || result.contains(&id) {
+            return Err(());
+        }
+        result.push(id);
+    }
+    Ok(result)
+}
 
 struct Submission {
     text: String,
@@ -48,6 +104,7 @@ struct Submission {
     error: Option<&'static str>,
     cover: Option<PageCover>,
     cover_base: Option<PageCover>,
+    attachments: Option<AttachmentChanges>,
 }
 
 impl From<Form> for Submission {
@@ -115,6 +172,7 @@ impl From<Form> for Submission {
             }
             _ => Err(()),
         };
+        let attachments = AttachmentChanges::parse(&form);
         let error = if version.is_none() {
             Some("Не удалось проверить версию. Скопируйте черновик и откройте редактор снова.")
         } else if !matches!(submitted_text, Ok(Some(_)))
@@ -129,6 +187,8 @@ impl From<Form> for Submission {
             Some("Текст не должен превышать 30 000 символов.")
         } else if cover.is_err() || cover_base.is_err() {
             Some(INVALID_COVER)
+        } else if attachments.is_err() {
+            Some(INVALID_ATTACHMENTS)
         } else {
             None
         };
@@ -145,6 +205,7 @@ impl From<Form> for Submission {
             error,
             cover: cover.unwrap_or_default(),
             cover_base: cover_base.unwrap_or_default(),
+            attachments: attachments.unwrap_or_default(),
         }
     }
 }
@@ -179,6 +240,15 @@ impl Submission {
             .or(prior_cover)
             .map(|value| cover_view(route, page, value))
             .or_else(|| conflict.as_ref().map(|current| current.cover.clone()));
+        let attachment_draft = self
+            .attachments
+            .as_ref()
+            .map(|change| change.draft)
+            .or_else(|| (can_save && cancel_to.is_some()).then(Uuid::new_v4));
+        let (attachment_added, attachment_removed) = self.attachments.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |change| (change.add, change.remove),
+        );
         PageEditorForm {
             action: edit_to(nav, page),
             history_to: (can_save && cancel_to.is_some())
@@ -199,6 +269,13 @@ impl Submission {
             cover_changed: self.cover.is_some(),
             cover_upload_to: can_save
                 .then(|| page_cover_upload_path(route.tenant, route.space, page)),
+            attachments: Vec::new(),
+            attachment_draft,
+            attachment_upload_to: attachment_draft
+                .filter(|_| can_save)
+                .map(|draft| attachment_draft_path(route.tenant, route.space, page, draft)),
+            attachment_added,
+            attachment_removed,
         }
     }
 }
@@ -303,6 +380,7 @@ pub(super) async fn open(
         record(principal.id, route, "not-found");
         return Ok(not_found(route.target));
     };
+    let files = attachments::published(route, id, current.attachments);
     if matches!(route.target, DocumentsTarget::EditPage(_)) {
         if !current.can_edit {
             record(principal.id, route, "forbidden");
@@ -314,6 +392,7 @@ pub(super) async fn open(
             PageContentFormat::Markdown => source.clone(),
         };
         let text_base = text_fingerprint(current.format, &source);
+        let draft = Uuid::new_v4();
         selected.editor = Some(PageEditorForm {
             action: edit_to(nav, id),
             cancel_to: Some(return_to(nav, id)),
@@ -332,12 +411,28 @@ pub(super) async fn open(
             cover_base: Some(current.cover.value()),
             cover_changed: false,
             cover_upload_to: Some(page_cover_upload_path(route.tenant, route.space, id)),
+            attachments: files,
+            attachment_draft: Some(draft),
+            attachment_upload_to: Some(attachment_draft_path(route.tenant, route.space, id, draft)),
+            attachment_added: Vec::new(),
+            attachment_removed: Vec::new(),
         });
     } else {
         let (text, rendered_html) = match current.format {
             PageContentFormat::Literal => (markdown_to_text(&current.source), None),
             PageContentFormat::Markdown => {
-                let rendered = render_markdown(&current.source);
+                let rendered = if files.is_empty() {
+                    render_markdown(&current.source)
+                } else {
+                    render_markdown_with_attachments(&current.source, &|id, inline| {
+                        let file = files.iter().find(|file| file.id == id)?;
+                        if inline {
+                            file.image_to.as_deref()
+                        } else {
+                            file.download_to.as_deref()
+                        }
+                    })
+                };
                 (current.source, Some(rendered))
             }
         };
@@ -349,6 +444,7 @@ pub(super) async fn open(
                 .can_edit
                 .then(|| page_history_path(route.tenant, route.space, id)),
             cover: cover_view(route, id, current.cover),
+            attachments: files,
         });
     }
     record(principal.id, route, "opened");
@@ -357,6 +453,7 @@ pub(super) async fn open(
 
 enum SaveFailure {
     Invalid(&'static str),
+    AttachmentReferences,
     Forbidden,
     Conflict(PageText),
 }
@@ -387,12 +484,31 @@ pub(super) async fn submit(
             .expect("validated submission includes a version");
         let address = nav.page_address(id, principal);
         let cover = input.cover.map_or(CoverUpdate::Keep, CoverUpdate::Set);
-        match timeout(
-            SAVE_TIMEOUT,
-            store.save_page(&address, revision, input.update(), cover),
-        )
-        .await
-        {
+        let patch = input
+            .attachments
+            .as_ref()
+            .and_then(AttachmentChanges::patch);
+        let save = async {
+            match patch {
+                Some(patch) => {
+                    store
+                        .save_page_with_attachments(
+                            &address,
+                            revision,
+                            input.update(),
+                            cover,
+                            Some(patch),
+                        )
+                        .await
+                }
+                None => {
+                    store
+                        .save_page(&address, revision, input.update(), cover)
+                        .await
+                }
+            }
+        };
+        match timeout(SAVE_TIMEOUT, save).await {
             Ok(Ok(SavePageText::Saved)) => {
                 record(principal.id, route, "saved");
                 return redirect(&return_to(nav, id));
@@ -404,9 +520,12 @@ pub(super) async fn submit(
             Ok(Ok(SavePageText::Forbidden)) => SaveFailure::Forbidden,
             Ok(Ok(SavePageText::Conflict(current))) => SaveFailure::Conflict(current),
             Ok(Ok(SavePageText::InvalidCover)) => SaveFailure::Invalid(INVALID_COVER),
+            Ok(Ok(SavePageText::InvalidAttachments)) => SaveFailure::Invalid(INVALID_ATTACHMENTS),
+            Ok(Ok(SavePageText::AttachmentReferencesPresent)) => SaveFailure::AttachmentReferences,
+            Ok(Ok(SavePageText::AttachmentRetired)) => SaveFailure::Invalid(ATTACHMENT_RETIRED),
             Ok(Err(_)) | Err(_) => {
                 record(principal.id, route, "unavailable");
-                return retry(nav, id, input);
+                return retry_after_write_failure(store, nav, &address, input).await;
             }
         }
     };
@@ -418,7 +537,7 @@ async fn render_failure(
     nav: &DocumentNavigation,
     id: Uuid,
     principal: &Principal,
-    input: Submission,
+    mut input: Submission,
     mut failure: SaveFailure,
 ) -> Response {
     let route = nav.route;
@@ -438,37 +557,160 @@ async fn render_failure(
     if !page.tree.can_create {
         failure = SaveFailure::Forbidden;
     }
-    let (status, error, conflict) = match failure {
-        SaveFailure::Invalid(error) => (StatusCode::UNPROCESSABLE_ENTITY, error, None),
-        SaveFailure::Forbidden => (StatusCode::FORBIDDEN, DENIED, None),
+    let address = nav.page_address(id, principal);
+    let (status, error, conflict, files) = match failure {
+        SaveFailure::Invalid(_) | SaveFailure::AttachmentReferences => {
+            let current = match timeout(RECOVERY_TIMEOUT, store.page_text(&address)).await {
+                Ok(Ok(Some(current))) => current,
+                Ok(Ok(None)) => return not_found(route.target),
+                Ok(Err(_)) | Err(_) => return retry(nav, id, input),
+            };
+            if !current.can_edit {
+                (StatusCode::FORBIDDEN, DENIED, None, Vec::new())
+            } else {
+                let error = match failure {
+                    SaveFailure::Invalid(error) => error,
+                    SaveFailure::AttachmentReferences => {
+                        if input.text_unchanged {
+                            input.source = normalize_line_endings(&current.source).into_owned();
+                            input.format = current.format;
+                            input.text = match current.format {
+                                PageContentFormat::Literal => markdown_to_text(&input.source),
+                                PageContentFormat::Markdown => input.source.clone(),
+                            };
+                            input.text_base = Some(text_fingerprint(current.format, &input.source));
+                        }
+                        ATTACHMENT_REFERENCES
+                    }
+                    _ => unreachable!(),
+                };
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    error,
+                    None,
+                    current.attachments,
+                )
+            }
+        }
+        SaveFailure::Forbidden => (StatusCode::FORBIDDEN, DENIED, None, Vec::new()),
         SaveFailure::Conflict(current) => (
             StatusCode::CONFLICT,
-            if input.cover.is_some() || input.cover_base.is_some_and(|base| base != current.cover) {
+            if input.cover.is_some()
+                || input.cover_base.is_some_and(|base| base != current.cover)
+                || input
+                    .attachments
+                    .as_ref()
+                    .is_some_and(|patch| patch.patch().is_some())
+            {
                 COVER_CONFLICT
             } else {
                 CONFLICT
             },
             Some(PageEditConflict {
                 text: normalize_line_endings(&current.source).into_owned(),
+                source: normalize_line_endings(&current.source).into_owned(),
+                content_format: current.format,
                 revision: current.content_revision.to_string(),
                 cover: cover_view(route, id, current.cover),
             }),
+            current.attachments,
         ),
     };
     let can_save = status != StatusCode::FORBIDDEN && input.version.is_some();
-    selected.editor =
-        Some(input.editor_form(nav, id, Some(return_to(nav, id)), error, conflict, can_save));
+    let changes = input.attachments.as_ref().filter(|_| can_save);
+    let staged = match timeout(RECOVERY_TIMEOUT, staged_files(store, &address, changes)).await {
+        Ok(Ok(files)) => files,
+        Ok(Err(_)) | Err(_) => return retry(nav, id, input),
+    };
+    let files = attachment_projection(route, id, changes, files, staged);
+    let mut form = input.editor_form(nav, id, Some(return_to(nav, id)), error, conflict, can_save);
+    form.attachments = files;
+    selected.editor = Some(form);
     record(principal.id, route, status.as_str());
     page.render(status, selected, None)
 }
 
 fn retry(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
-    let error = if input.cover.is_some() {
+    retry_with_attachments(nav, id, input, Vec::new())
+}
+
+async fn staged_files(
+    store: &Store,
+    address: &PageAddress,
+    changes: Option<&AttachmentChanges>,
+) -> Result<Vec<Attachment>, sqlx::Error> {
+    match changes.filter(|patch| !patch.add.is_empty()) {
+        Some(patch) => {
+            store
+                .draft_attachments(address, patch.draft, &patch.add)
+                .await
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+fn attachment_projection(
+    route: DocumentsRoute,
+    id: Uuid,
+    changes: Option<&AttachmentChanges>,
+    published: Vec<Attachment>,
+    staged: Vec<Attachment>,
+) -> Vec<PageAttachmentView> {
+    let mut files = attachments::published(route, id, published);
+    if let Some(patch) = changes {
+        files.retain(|file| !patch.remove.contains(&file.id));
+        let base = attachment_draft_path(route.tenant, route.space, id, patch.draft);
+        for file in staged {
+            if !files.iter().any(|current| current.id == file.id) {
+                files.push(attachments::staged(&base, file));
+            }
+        }
+    }
+    files
+}
+
+async fn retry_after_write_failure(
+    store: &Store,
+    nav: &DocumentNavigation,
+    address: &PageAddress,
+    input: Submission,
+) -> Response {
+    let changes = input.attachments.as_ref();
+    let (live, staged) = tokio::join!(
+        timeout(FILE_RECOVERY_TIMEOUT, store.page_text(address)),
+        timeout(FILE_RECOVERY_TIMEOUT, staged_files(store, address, changes)),
+    );
+    // These checks run only after identity is known and both reads independently
+    // recheck access. Staged metadata can be recovered even if pages is locked.
+    let staged = staged.ok().and_then(Result::ok).unwrap_or_default();
+    let files = match live {
+        Ok(Ok(Some(page))) if page.can_edit => {
+            attachment_projection(nav.route, address.page, changes, page.attachments, staged)
+        }
+        Ok(Ok(_)) => Vec::new(),
+        _ => attachment_projection(nav.route, address.page, changes, Vec::new(), staged),
+    };
+    retry_with_attachments(nav, address.page, input, files)
+}
+
+fn retry_with_attachments(
+    nav: &DocumentNavigation,
+    id: Uuid,
+    input: Submission,
+    files: Vec<PageAttachmentView>,
+) -> Response {
+    let error = if input.cover.is_some()
+        || input
+            .attachments
+            .as_ref()
+            .is_some_and(|patch| patch.patch().is_some())
+    {
         "Не удалось сохранить страницу. Попробуйте снова."
     } else {
         UNAVAILABLE
     };
-    let form = input.editor_form(nav, id, None, error, None, true);
+    let mut form = input.editor_form(nav, id, None, error, None, true);
+    form.attachments = files;
     html(
         StatusCode::SERVICE_UNAVAILABLE,
         views::page_edit_retry(&form),
@@ -478,6 +720,54 @@ fn retry(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_patch_is_bounded_canonical_and_preserved_for_retry() {
+        let draft = "11111111-1111-1111-1111-111111111111";
+        let add = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let remove = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        for part in [
+            format!("attachmentAdd={add}"),
+            format!("attachmentDraft={draft}&attachmentAdd={add}&attachmentRemove={add}"),
+            format!("attachmentDraft={draft}&attachmentAdd={add},{add}"),
+            format!(
+                "attachmentDraft={draft}&attachmentAdd={}",
+                add.to_uppercase()
+            ),
+            format!("attachmentDraft={draft}&attachmentAdd={add}&attachmentAdd="),
+        ] {
+            let form = Submission::from(Form::from_query(&format!("revision=2&text=kept&{part}")));
+            assert_eq!(form.error, Some(INVALID_ATTACHMENTS));
+            assert!(form.attachments.is_none());
+            assert_eq!(form.source, "kept");
+        }
+        let input = Submission::from(Form::from_query(&format!(
+            "revision=2&text=preserved&attachmentDraft={draft}&attachmentAdd={add}&attachmentRemove={remove}"
+        )));
+        let id = Uuid::new_v4();
+        let route = DocumentsRoute {
+            tenant: Uuid::new_v4(),
+            space: Uuid::new_v4(),
+            target: DocumentsTarget::EditPage(id),
+        };
+        let navigation =
+            DocumentNavigation::for_request(route, &Request::new(axum::body::Body::empty()));
+        let retry = input.editor_form(&navigation, id, None, UNAVAILABLE, None, true);
+        assert!(retry.attachments.is_empty());
+        assert_eq!(retry.source, "preserved");
+        assert_eq!(retry.attachment_draft, canonical_uuid(draft));
+        assert_eq!(retry.attachment_added, vec![canonical_uuid(add).unwrap()]);
+        assert_eq!(
+            retry.attachment_removed,
+            vec![canonical_uuid(remove).unwrap()]
+        );
+        assert!(
+            retry
+                .attachment_upload_to
+                .unwrap()
+                .ends_with(&format!("/attachments/drafts/{draft}"))
+        );
+    }
 
     #[test]
     fn an_untouched_modern_draft_keeps_the_actual_text_across_rebase() {
@@ -523,6 +813,8 @@ mod tests {
         let nav = DocumentNavigation::for_request(route, &Request::new(axum::body::Body::empty()));
         let conflict = || PageEditConflict {
             text: String::new(),
+            source: String::new(),
+            content_format: PageContentFormat::Markdown,
             revision: "2".into(),
             cover: cover_view(route, page, PageCover::Grid),
         };

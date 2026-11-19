@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Север · Вложения и изображения</title>
+  <link rel="stylesheet" href="../graph.css">
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="page-attachments.css">
+  <script type="module" src="page-attachments.mjs"></script>
+</head>
+<body class="workspace-shell attachments-demo" data-graph-theme="dark">
+  <header class="attachments-dock">
+    <a href="index.html#doc/access" class="btn ghost" id="tenant">Север</a>
+    <span aria-hidden="true">/</span>
+    <span>Документация команды</span>
+    <a class="btn ghost attachments-role" id="role-link" href="?view=reader">Режим читателя</a>
+  </header>
+  <main class="doc-layout" data-context="false">
+    <aside class="sidebar" aria-label="Дерево пространства">
+      <div class="space-card"><span class="space-emblem" id="tree-icon"></span><strong>Документация команды</strong></div>
+      <div class="tree-scroll">
+        <div class="tree-item">Руководство</div>
+        <div class="tree-level"><span class="tree-item" aria-current="page">Доступ к пространству</span></div>
+      </div>
+    </aside>
+    <section class="doc-center" aria-labelledby="page-title">
+      <header class="doc-bar">
+        <div class="breadcrumbs">Руководство <span aria-hidden="true">›</span> <strong>Доступ к пространству</strong></div>
+        <button class="btn" id="edit" type="button">Редактировать</button>
+      </header>
+      <div class="doc-scroll">
+        <article class="article">
+          <h1 id="page-title" tabindex="-1">Доступ к пространству</h1>
+          <div class="page-meta" id="metadata"><span class="tag" id="revision">Редакция 04</span></div>
+          <div id="reading" class="article-body"></div>
+          <div id="editing" class="editor-form" hidden>
+            <div class="editor-toolbar" aria-label="Вставка в редактор">
+              <button class="btn ghost" id="image" type="button">Изображение</button>
+              <button class="btn ghost" id="source-toggle" type="button" aria-pressed="false">Исходник</button>
+            </div>
+            <div class="editor-visual article-body" id="visual" contenteditable="true" role="textbox" aria-label="Содержимое страницы" aria-multiline="true"></div>
+            <textarea class="editor-source" id="source" aria-label="Исходный Markdown" hidden></textarea>
+            <div class="attachment-commands" id="commands" hidden>
+              <button class="btn ghost" type="button" id="command-image">Изображение</button>
+            </div>
+          </div>
+          <section class="attachment-panel" aria-labelledby="attachments-title">
+            <header>
+              <h2 id="attachments-title">Вложения <span id="attachment-count"></span></h2>
+              <button class="btn" id="attach" type="button" hidden>Прикрепить файл</button>
+            </header>
+            <ul id="files" class="attachment-list"></ul>
+            <p class="muted" id="empty-files" hidden>У страницы пока нет вложений.</p>
+          </section>
+          <div class="edit-footer" id="publication" hidden>
+            <button class="btn ghost" id="cancel" type="button">Отмена</button>
+            <button class="btn primary" id="save" type="button">Сохранить</button>
+          </div>
+          <p class="form-status" id="status" role="status" tabindex="-1"></p>
+        </article>
+      </div>
+    </section>
+  </main>
+  <dialog class="workspace-dialog" id="attachment-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-header">
+      <h2 id="dialog-title"></h2>
+      <button class="btn ghost" type="button" id="dialog-close" aria-label="Закрыть">×</button>
+    </div>
+    <form class="dialog-body" id="attachment-form">
+      <div id="dialog-fields"></div>
+      <p class="attachment-error" id="dialog-error" role="alert" hidden></p>
+      <div class="dialog-buttons">
+        <button class="btn ghost" id="dialog-cancel" type="button">Отмена</button>
+        <button class="btn primary" id="dialog-submit" type="submit"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

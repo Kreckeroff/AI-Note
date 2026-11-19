@@ -952,6 +952,41 @@ export function pasteMarkdown(source: string, legacy: boolean, range: SourceRang
   return result.source === promoted.source ? unchanged(source, legacy, range) : result;
 }
 
+export function insertAttachmentImage(source: string, legacy: boolean, range: SourceRange, id: string, alt: string): EditorChange {
+  const initial = parseMarkdown(source, legacy);
+  const block = blockAt(initial, range.start);
+  if (!block || block !== blockAt(initial, range.end) || range.start < block.bodyStart ||
+      isProtected(initial, range) || structuralBlock(block) && !tableCellAt(block, range) ||
+      /[\r\n]/u.test(alt)) return unchanged(source, legacy, range);
+  const promoted = promote(source, legacy, range);
+  const document = parseMarkdown(promoted.source, false);
+  const selected = promoted.range;
+  if (allMarks(document).some(mark => (mark.kind === 'code' || mark.kind === 'link') &&
+      mark.openStart < selected.end && selected.start < mark.closeEnd)) return unchanged(source, legacy, range);
+
+  const reference = `![${escapeLiteralText(alt)}](attachment:${id})`;
+  const result = separateInline(promoted.source, false, document, selected, reference, 'middle');
+  const rendered = parseMarkdown(result.source, false).runs.find(run => run.attachment?.id === id &&
+    run.attachment.image && run.offsets.at(-1) === result.end);
+  return rendered ? result : unchanged(source, legacy, range);
+}
+
+export function attachmentRanges(source: string, legacy: boolean, id: string): SourceRange[] {
+  return attachmentSpans(source, legacy, new Set([id]));
+}
+
+function attachmentSpans(source: string, legacy: boolean, ids: Set<string>): SourceRange[] {
+  return parseMarkdown(source, legacy).runs.filter(run => run.attachment && ids.has(run.attachment.id)).map(run => ({
+    start: run.offsets[0], end: run.offsets.at(-1)!,
+  }));
+}
+
+export function removeAttachmentReferences(source: string, legacy: boolean, selection: SourceRange, ids: string | readonly string[]): EditorChange {
+  const ranges = attachmentSpans(source, legacy, new Set(typeof ids === 'string' ? [ids] : ids));
+  if (!ranges.length) return unchanged(source, legacy, selection);
+  return applyPatches(source, selection, ranges.map(range => ({...range, value: ''})));
+}
+
 export function toggleTask(source: string, legacy: boolean, range: SourceRange): EditorChange {
   const task = blockAt(parseMarkdown(source, legacy), range.start)?.task;
   if (!task) return unchanged(source, legacy, range);

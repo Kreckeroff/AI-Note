@@ -1,5 +1,7 @@
 import {Fragment, type ReactNode} from 'react';
-import type {EditorBlock, MarkdownDocument, TextRun} from './markdownModel';
+import type {EditorBlock, MarkdownDocument, SourceRange, TextRun} from './markdownModel';
+import type {PageAttachment} from './pageAttachments';
+import {Icon} from '../Icon';
 
 export const caretPlaceholder = '\u200b';
 export const protectedEdit = 'Чтобы изменить этот фрагмент, откройте «Исходник».';
@@ -7,13 +9,20 @@ export const protectedEdit = 'Чтобы изменить этот фрагме�
 type BlockOptions = {
   model: MarkdownDocument;
   readOnly: boolean;
+  attachments: readonly PageAttachment[];
+  onRemoveImage(range: SourceRange): void;
   onTask(block: EditorBlock): void;
   onLanguage(block: EditorBlock, value: string): void;
   onExitCode(block: EditorBlock): void;
 };
 
-function renderRun(run: TextRun, index: number): ReactNode {
-  const content = <span
+function renderRun(run: TextRun, index: number, file: PageAttachment | undefined, removeImage: (() => void) | undefined): ReactNode {
+  const image = run.attachment?.image && file?.imageTo;
+  const content = image ? <span data-markdown-run={index} contentEditable={false} className="page-attachment-image-editor">
+    <img className="page-inline-image" src={image} alt={run.attachment?.alt ?? ''} draggable={false} />
+    {removeImage && <button className="page-attachment-erase" type="button" onClick={removeImage}
+      aria-label="Убрать изображение из текста"><Icon name="close" /></button>}
+  </span> : <span
     data-markdown-run={index}
     contentEditable={run.locked ? false : undefined}
     className={run.locked ? 'page-rich-protected' : undefined}
@@ -33,9 +42,12 @@ function isList(block?: EditorBlock): block is EditorBlock & {kind: 'bullet' | '
   return block?.kind === 'bullet' || block?.kind === 'ordered';
 }
 
-export function RichMarkdownBlocks({model, readOnly, onTask, onLanguage, onExitCode}: BlockOptions) {
+export function RichMarkdownBlocks({model, readOnly, attachments, onRemoveImage, onTask, onLanguage, onExitCode}: BlockOptions) {
   const indices = new Map(model.runs.map((run, index) => [run, index]));
-  const contents = (runs: TextRun[]) => runs.map(run => renderRun(run, indices.get(run)!));
+  const files = new Map(attachments.map(file => [file.id, file]));
+  const contents = (runs: TextRun[]) => runs.map(run => renderRun(run, indices.get(run)!,
+    run.attachment ? files.get(run.attachment.id) : undefined,
+    !readOnly && run.attachment?.image ? () => onRemoveImage({start:run.offsets[0], end:run.offsets.at(-1)!}) : undefined));
   let index = 0;
 
   function renderList(first: EditorBlock & {kind: 'bullet' | 'ordered'}): ReactNode {

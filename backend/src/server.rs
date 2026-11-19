@@ -44,6 +44,8 @@ pub(crate) async fn run(
     let host = format!("{public_host}:{}", listener.local_addr()?.port());
     let origin = format!("http://{host}");
     println!("Север · {origin}/");
+    let cleanup_store = store.clone();
+    let (stop_cleanup, cleanup_stopped) = tokio::sync::oneshot::channel();
     let state = Arc::new(Server {
         store,
         identity: Identity::new(),
@@ -51,9 +53,20 @@ pub(crate) async fn run(
         host,
         origin,
     });
-    axum::serve(listener, Router::new().fallback(dispatch).with_state(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let app = axum::serve(listener, Router::new().fallback(dispatch).with_state(state))
+        .with_graceful_shutdown(async move {
+            shutdown().await;
+            let _ = stop_cleanup.send(());
+        });
+    let cleanup = async move {
+        tokio::select! {
+            biased;
+            _ = cleanup_stopped => {}
+            _ = cleanup_store.sweep_attachment_drafts(Duration::from_secs(30)) => {}
+        }
+    };
+    let (result, ()) = tokio::join!(async { app.await }, cleanup);
+    result?;
     Ok(())
 }
 
@@ -108,6 +121,8 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                     }
                     if route.is_some_and(Route::is_cover) {
                         sections_http::cover_unavailable(is_read)
+                    } else if route.is_some_and(Route::is_attachment) {
+                        sections_http::attachment_unavailable(is_read)
                     } else if history_json {
                         sections_http::history_api_error(StatusCode::SERVICE_UNAVAILABLE)
                     } else if catalog {
@@ -279,6 +294,9 @@ impl Server {
             let history_target = route.history_target();
             if route.is_cover() {
                 return Ok(sections_http::cover_unauthenticated(is_read));
+            }
+            if route.is_attachment() {
+                return Ok(sections_http::attachment_unauthenticated(is_read));
             }
             if history_target == Some(HistoryTarget::List)
                 && sections_http::history_wants_json(request.headers())
@@ -825,6 +843,45 @@ mod tests {
             r#"<div class="document-text">{}</div>"#,
             "*".repeat(30_000)
         )));
+
+        let draft = Uuid::new_v4();
+        let file = Uuid::new_v4();
+        let address = crate::db::PageAddress {
+            tenant,
+            space,
+            page,
+            account: *owner,
+        };
+        assert!(matches!(
+            server
+                .store
+                .stage_attachment(
+                    &address,
+                    draft,
+                    file,
+                    "Ожидает.txt",
+                    None,
+                    b"draft contents"
+                )
+                .await?,
+            crate::db::StageAttachment::Saved(_),
+        ));
+        let mut unavailable = pool.begin().await?;
+        sqlx::query("LOCK TABLE pages IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *unavailable)
+            .await?;
+        let form = format!(
+            "revision=10&text=retry-body&contentFormat=markdown&attachmentDraft={draft}&attachmentAdd={file}"
+        );
+        let retry = send_encoded(owner_token, &edit_to, Some(form)).await;
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_text(retry).await?;
+        assert!(body.contains(&format!(r#"name="attachmentDraft" value="{draft}""#)));
+        assert!(body.contains(&format!(r#"name="attachmentAdd" value="{file}""#)));
+        assert!(body.contains("Ожидает.txt"));
+        assert!(body.contains("retry-body"));
+        assert!(!body.contains("draft contents"));
+        unavailable.rollback().await?;
         Ok(())
     }
 
@@ -894,6 +951,66 @@ mod tests {
             let response = dispatch(State(server.clone()), request).await;
             assert_eq!(response.status(), status);
             assert!(!response.headers().contains_key(header::LOCATION));
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
+
+    #[tokio::test]
+    async fn attachment_requests_do_not_redirect_or_expose_metadata_without_a_session() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333",
+        );
+        const FILE: &str = "44444444-4444-4444-4444-444444444444";
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let draft = format!("{PATH}/attachments/drafts/{FILE}/{FILE}");
+        let published = format!("{PATH}/attachments/{FILE}");
+        let archived = format!("{PATH}/revisions/12/attachments/{FILE}/image");
+        for (method, path, cookie, status) in [
+            (Method::POST, draft.clone(), false, StatusCode::UNAUTHORIZED),
+            (
+                Method::GET,
+                format!("{draft}/image"),
+                false,
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Method::HEAD,
+                published.clone(),
+                false,
+                StatusCode::NOT_FOUND,
+            ),
+            (Method::GET, archived, false, StatusCode::NOT_FOUND),
+            (
+                Method::GET,
+                published,
+                true,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, &server.host);
+            let request = if cookie {
+                request.header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+            } else {
+                request
+            };
+            let response =
+                dispatch(State(server.clone()), request.body(Body::empty()).unwrap()).await;
+            assert_eq!(response.status(), status);
+            assert!(!response.headers().contains_key(header::LOCATION));
+            assert!(!response.headers().contains_key(header::CONTENT_DISPOSITION));
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         }
     }
@@ -1117,6 +1234,28 @@ mod tests {
         assert!(body.contains(r#"name="contentFormat" value="literal""#));
         assert!(body.contains(r#"name="editorMode" value="visual""#));
         assert!(!body.contains("data-native-source"));
+
+        let draft = Uuid::new_v4();
+        let file = Uuid::new_v4();
+        let form = format!(
+            "revision=8&text=pending&attachmentDraft={draft}&attachmentAdd={file}&name=client-supplied-secret.txt"
+        );
+        let pending = Request::builder()
+            .uri(PATH)
+            .method(Method::POST)
+            .header(header::HOST, &server.host)
+            .header(header::ORIGIN, &server.origin)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+            .body(Body::from(form))
+            .unwrap();
+        let retry = dispatch(State(server.clone()), pending).await;
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_text(retry).await.unwrap();
+        assert!(body.contains(&format!(r#"name="attachmentDraft" value="{draft}""#)));
+        assert!(body.contains(&format!(r#"name="attachmentAdd" value="{file}""#)));
+        assert!(!body.contains("client-supplied-secret.txt"));
+        assert!(!body.contains("page-attachment-row"));
 
         let foreign = dispatch(
             State(server.clone()),

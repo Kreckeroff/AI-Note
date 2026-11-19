@@ -1,4 +1,6 @@
-use crate::sections::{CoverView, PageEditorForm, SectionScreen};
+use std::fmt::Write as _;
+
+use crate::sections::{CoverView, PageAttachmentView, PageEditorForm, SectionScreen};
 
 use super::{PageAssets, client::ClientPage, html, page};
 
@@ -71,7 +73,52 @@ pub(super) fn page_contents(tree: &SectionScreen) -> String {
         body.as_deref()
             .unwrap_or(r#"<p class="document-empty">Пока здесь ничего нет.</p>"#),
     );
+    if let Some(reading) = &tree.reading {
+        content.push_str(&attachment_list(&reading.attachments));
+    }
     content
+}
+
+pub(super) fn attachment_list(files: &[PageAttachmentView]) -> String {
+    let mut result = String::from(
+        r#"<section class="page-attachments" aria-labelledby="page-attachments-title">
+<header class="page-attachment-heading"><h2 id="page-attachments-title">Вложения</h2></header>"#,
+    );
+    if files.is_empty() {
+        result.push_str(r#"<p class="page-attachment-empty">У страницы пока нет вложений.</p>"#);
+    } else {
+        result.push_str(r#"<ul class="page-attachment-list">"#);
+        for file in files {
+            let name = html(&file.name);
+            let _ = write!(
+                result,
+                r#"<li class="page-attachment-row"><span class="page-attachment-meta"><strong>{name}</strong><small>{}</small></span>"#,
+                size_label(file.bytes),
+            );
+            if let Some(path) = &file.download_to {
+                let _ = write!(
+                    result,
+                    r#"<a class="space-action space-secondary" href="{}" aria-label="Скачать {name}">Скачать</a>"#,
+                    html(path),
+                );
+            }
+            result.push_str("</li>");
+        }
+        result.push_str("</ul>");
+    }
+    result.push_str("</section>");
+    result
+}
+
+fn size_label(bytes: i64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} Б")
+    } else if bytes < 1024 * 1024 {
+        format!("{} КБ", (bytes + 1023) / 1024)
+    } else {
+        let mebibytes = format!("{:.1}", bytes as f64 / (1024.0 * 1024.0));
+        format!("{} МБ", mebibytes.trim_end_matches(".0").replace('.', ","))
+    }
 }
 
 fn history_link(to: &str, editing: bool) -> String {
@@ -115,6 +162,26 @@ fn page_editor(form: &PageEditorForm) -> String {
         .text_base
         .as_deref()
         .map_or_else(String::new, |base| hidden_field("textBase", base));
+    let attachment_inputs = form.attachment_draft.map_or_else(String::new, |draft| {
+        let ids = |value: &[uuid::Uuid]| {
+            value
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "{}{}{}",
+            hidden_field("attachmentDraft", &draft.to_string()),
+            hidden_field("attachmentAdd", &ids(&form.attachment_added)),
+            hidden_field("attachmentRemove", &ids(&form.attachment_removed)),
+        )
+    });
+    let attachments = if !form.attachments.is_empty() {
+        attachment_list(&form.attachments)
+    } else {
+        String::new()
+    };
     let cover_preview = form.cover.as_ref().map_or_else(String::new, |cover| {
         let art = cover_art(cover);
         if art.is_empty() {
@@ -196,7 +263,7 @@ fn page_editor(form: &PageEditorForm) -> String {
       <input type="hidden" name="revision" value="{revision}">
       <input type="hidden" name="contentFormat" value="{format}">
       <input type="hidden" name="editorMode" value="{mode}">
-      {text_base}{cover_base}{cover_input}
+      {text_base}{cover_base}{cover_input}{attachment_inputs}
       {cover_preview}
       {error}
       <div class="page-editor-columns{conflict_columns}">
@@ -207,6 +274,7 @@ fn page_editor(form: &PageEditorForm) -> String {
         </div>
         {current}
       </div>
+      {attachments}
       {cover_choice}
       {rebase}
       {text_note}

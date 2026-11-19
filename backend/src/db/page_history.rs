@@ -2,7 +2,8 @@ use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
 use super::{
-    PageAddress, PageContentFormat, PageCover, Store,
+    Attachment, PageAddress, PageContentFormat, PageCover, Store,
+    page_attachments::{REVISION_ATTACHMENTS, decode_attachments, record_snapshot_attachments},
     sections::{SPACE_ACCESS, decode_title},
 };
 
@@ -52,6 +53,7 @@ pub(crate) struct PageRevisionSnapshot {
     pub source: String,
     pub format: PageContentFormat,
     pub cover: PageCover,
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -194,6 +196,7 @@ struct SnapshotRow {
     is_markdown: bool,
     cover_theme: Option<String>,
     cover_asset_id: Option<Uuid>,
+    attachments: String,
 }
 
 async fn read_snapshots(
@@ -203,7 +206,7 @@ async fn read_snapshots(
 ) -> Result<Vec<PageRevisionSnapshot>, sqlx::Error> {
     // Both sides of a comparison come from the same statement snapshot, including
     // when the existing live page has not materialized its baseline yet.
-    let query = scoped(
+    let query = scoped(&format!(
         r#"SELECT p.content_revision AS current_revision, request.revision,
                   r.author_name AS author,
                   to_char(r.recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS recorded_at,
@@ -211,7 +214,8 @@ async fn read_snapshots(
                   coalesce(r.markdown, live_page.markdown) AS source,
                   coalesce(r.content_is_markdown, live_page.content_is_markdown) AS is_markdown,
                   CASE WHEN r.revision IS NULL THEN c.theme ELSE r.cover_theme END AS cover_theme,
-                  CASE WHEN r.revision IS NULL THEN c.asset_id ELSE r.cover_asset_id END AS cover_asset_id
+                  CASE WHEN r.revision IS NULL THEN c.asset_id ELSE r.cover_asset_id END AS cover_asset_id,
+                  {REVISION_ATTACHMENTS} AS attachments
            FROM editable_page p
            JOIN pages live_page ON (live_page.tenant_id, live_page.space_id, live_page.id) = ($1, $2, $4)
            CROSS JOIN unnest($5::bigint[]) WITH ORDINALITY AS request(revision, ord)
@@ -222,7 +226,7 @@ async fn read_snapshots(
                AND p.content_revision = request.revision AND r.revision IS NULL
            WHERE r.revision IS NOT NULL OR request.revision = p.content_revision
            ORDER BY request.ord"#,
-    );
+    ));
     let rows: Vec<SnapshotRow> = sqlx::query_as(&query)
         .bind(address.tenant)
         .bind(address.space)
@@ -242,6 +246,7 @@ async fn read_snapshots(
                 source: row.source,
                 format: PageContentFormat::from_markdown(row.is_markdown),
                 cover: PageCover::from_storage(row.cover_theme.as_deref(), row.cover_asset_id),
+                attachments: decode_attachments(&row.attachments)?,
             })
         })
         .collect()
@@ -317,10 +322,10 @@ pub(super) async fn record_current_snapshot(
     .bind(address.page)
     .bind(author)
     .bind(reuse_cover_from)
-    .execute(tx)
+    .execute(&mut *tx)
     .await?;
     if added.rows_affected() != 1 {
         return Err(sqlx::Error::RowNotFound);
     }
-    Ok(())
+    record_snapshot_attachments(tx, address).await
 }

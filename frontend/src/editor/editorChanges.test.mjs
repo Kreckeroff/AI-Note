@@ -21,6 +21,52 @@ const place = (source, word) => {
 
 const caret = (position) => ({start:position,end:position});
 
+test('inserting a local image preserves adjacent text and escapes its alternate description', async () => {
+  const {insertAttachmentImage} = await import('./editorChanges.ts');
+  const id = '7c2c2b1e-5348-4ddb-89ec-7e4bfeeddcad';
+  const original = 'До /изо и после';
+  const result = insertAttachmentImage(original,false,place(original,'/изо'),id,'Схема [A | B]');
+  const inserted = parseMarkdown(result.source,false).runs.find(run => run.attachment?.id === id);
+  assert.equal(inserted?.attachment.alt,'Схема [A | B]');
+  assert.equal(result.source.slice(result.end),' и после');
+  assert.ok(result.source.startsWith('До !['));
+  assert.equal(insertAttachmentImage('`код`',false,caret(3),id,'x').source,'`код`');
+  assert.equal(insertAttachmentImage('AB',false,caret(1),id,'').source,`A![](attachment:${id})B`);
+});
+
+test('removing one attachment strips only its recognized references, preserving code, escaped examples and other files', async () => {
+  const {attachmentRanges, removeAttachmentReferences} = await import('./editorChanges.ts');
+  const id = '7c2c2b1e-5348-4ddb-89ec-7e4bfeeddcad';
+  const other = 'ab637c85-504e-4d68-b95a-f93fb42bf08d';
+  const image = `![Схема](attachment:${id})`;
+  const link = `[Файл](attachment:${id})`;
+  const innocent = [`\\!\\${image.slice(1)}`, '`' + image + '`', '```', image, '```', `![Другая](attachment:${other})`].join('\n');
+  const source = `До ${image} после\n\n${link}\n${innocent}`;
+  assert.equal(attachmentRanges(source,false,id).length,2);
+  assert.equal(removeAttachmentReferences(source,false,caret(source.length),id).source,`До  после\n\n\n${innocent}`);
+  assert.equal(removeAttachmentReferences(source,true,caret(0),id).source,source);
+});
+
+test('attachment removal uses raw canonical tokens and permits an empty label only for images', async () => {
+  const {attachmentRanges, removeAttachmentReferences} = await import('./editorChanges.ts');
+  const id = '7c2c2b1e-5348-4ddb-89ec-7e4bfeeddcad';
+  const literal = [
+    `![Пример](attachment\\:${id})`,
+    `[Пример](attachment:${id.replace('-', '\\-')})`,
+    `[](attachment:${id})`,
+    `![Регистр](attachment:${id.toUpperCase()})`,
+    '`' + `![](attachment:${id})` + '`',
+  ].join('\n');
+  const reference = `![](attachment:${id})`;
+  const ordinaryLink = '[Сайт](https\\://example.test/a\\(b\\))';
+  const source = `${literal}\n\n${reference} и ${ordinaryLink}`;
+  assert.deepEqual(attachmentRanges(source,false,id).map(({start,end})=>source.slice(start,end)),[reference]);
+  assert.equal(removeAttachmentReferences(source,false,caret(source.length),id).source,`${literal}\n\n и ${ordinaryLink}`);
+  const references = parseMarkdown(source,false).runs.flatMap(run => run.attachment ? [run.attachment] : []);
+  assert.deepEqual(references,[{id,alt:'',image:true}]);
+  assert.ok(parseMarkdown(source,false).runs.some(run => run.marks.some(mark => mark.href === 'https://example.test/a(b)')));
+});
+
 test('striking a selection preserves other inline marks and can be reversed locally', () => {
   const source = 'До **слово** после';
   const marked = applyCommand(source,false,place(source,'слово'),'strike');

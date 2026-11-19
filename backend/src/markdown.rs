@@ -1,9 +1,11 @@
 use std::fmt::Write as _;
 use std::sync::LazyLock;
+use std::{cell::RefCell, collections::BTreeSet};
 
 use regex::Regex;
 use serde::Serialize;
 use url::Url;
+use uuid::Uuid;
 
 use crate::text::{escape_html as html, is_js_whitespace, markdown_to_text};
 
@@ -24,7 +26,37 @@ impl RenderedMarkdown {
 }
 
 pub(crate) fn render_markdown(source: &str) -> RenderedMarkdown {
-    RenderedMarkdown(blocks::render(source))
+    render_markdown_with_attachments(source, &|_, _| None)
+}
+
+type AttachmentUrl<'a> = dyn Fn(Uuid, bool) -> Option<&'a str> + 'a;
+
+pub(crate) fn render_markdown_with_attachments(
+    source: &str,
+    attachment_url: &AttachmentUrl<'_>,
+) -> RenderedMarkdown {
+    RenderedMarkdown(blocks::render(source, attachment_url))
+}
+
+pub(crate) fn contains_attachment_reference(source: &str, ids: &[Uuid]) -> bool {
+    !ids.is_empty()
+        && attachment_reference_ids(source)
+            .iter()
+            .any(|id| ids.contains(id))
+}
+
+pub(crate) fn attachment_reference_ids(source: &str) -> Vec<Uuid> {
+    if !source.contains("attachment:") {
+        return Vec::new();
+    }
+    let found = RefCell::new(BTreeSet::new());
+    // Use the same grammar for storage and rendering, so code spans, fences
+    // and escaped text never count as a live reference during publication.
+    render_markdown_with_attachments(source, &|id, _| {
+        found.borrow_mut().insert(id);
+        None
+    });
+    found.into_inner().into_iter().collect()
 }
 
 fn run(text: &[u8], marker: u8) -> usize {
@@ -107,11 +139,25 @@ impl Emphasis {
     }
 }
 
-fn inline(text: &str, in_table: bool) -> String {
-    inline_text(text, in_table, true)
+fn attachment_id(link: &MarkdownLink<'_>) -> Option<Uuid> {
+    if !link.image && link.label.is_empty() {
+        return None;
+    }
+    let token = link.destination.strip_prefix("attachment:")?;
+    let id = Uuid::parse_str(token).ok()?;
+    (token == id.to_string()).then_some(id)
 }
 
-fn inline_text(text: &str, in_table: bool, links: bool) -> String {
+fn inline(text: &str, in_table: bool, attachment_url: &AttachmentUrl<'_>) -> String {
+    inline_text(text, in_table, true, attachment_url)
+}
+
+fn inline_text(
+    text: &str,
+    in_table: bool,
+    links: bool,
+    attachment_url: &AttachmentUrl<'_>,
+) -> String {
     let mut stack = vec![Emphasis::new(0, 0)];
     let bytes = text.as_bytes();
     let mut cursor = 0;
@@ -130,7 +176,23 @@ fn inline_text(text: &str, in_table: bool, links: bool) -> String {
             && (bytes.get(cursor) == Some(&b'[') || bytes[cursor..].starts_with(b"!["))
             && let Some(link) = link_at(&text[cursor..])
         {
-            if !link.image
+            if let Some(path) = attachment_id(&link).and_then(|id| attachment_url(id, link.image)) {
+                if link.image {
+                    let _ = write!(
+                        output,
+                        "<img class=\"page-inline-image\" src=\"{}\" alt=\"{}\" loading=\"lazy\" decoding=\"async\">",
+                        html(path),
+                        html(&markdown_to_text(link.label))
+                    );
+                } else {
+                    let _ = write!(
+                        output,
+                        "<a href=\"{}\">{}</a>",
+                        html(path),
+                        inline_text(link.label, in_table, false, attachment_url)
+                    );
+                }
+            } else if !link.image
                 && !link.label.is_empty()
                 && let Some(destination) = http_destination(&markdown_to_text(link.destination))
             {
@@ -138,7 +200,7 @@ fn inline_text(text: &str, in_table: bool, links: bool) -> String {
                     output,
                     "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{}</a>",
                     html(destination.as_str()),
-                    inline_text(link.label, in_table, false)
+                    inline_text(link.label, in_table, false, attachment_url)
                 );
             } else {
                 append_literal(output, &text[cursor..cursor + link.end], in_table);
@@ -289,7 +351,63 @@ fn wrapped(marker: u8, width: usize, body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render_markdown;
+    use super::{contains_attachment_reference, render_markdown, render_markdown_with_attachments};
+
+    #[test]
+    fn detects_live_attachment_references_without_treating_code_as_links() {
+        let id = uuid::Uuid::new_v4();
+        let token = format!("attachment:{id}");
+        let reference = format!("![alt]({token})");
+        for live in [
+            reference.clone(),
+            format!("- [Файл]({token})"),
+            format!("![]({token})"),
+        ] {
+            assert!(contains_attachment_reference(&live, &[id]));
+        }
+        for inert in [
+            format!("`{reference}`"),
+            format!("~~~\n{reference}\n~~~"),
+            format!(r"\[пример]({token})"),
+            format!("[]({token})"),
+        ] {
+            assert!(!contains_attachment_reference(&inert, &[id]), "{inert}");
+        }
+        assert!(!contains_attachment_reference(
+            &reference,
+            &[uuid::Uuid::nil()]
+        ));
+    }
+
+    #[test]
+    fn page_markup_resolves_only_current_page_files_and_preserves_alt_text() {
+        let id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let source = format!(
+            r#"![«A» \[B\] <tag>]({0}:{id})
+![missing](attachment:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)
+![external](https://example.test/cat.png)
+`![code]({0}:{id})`
+[Файл]({0}:{id})"#,
+            "attachment"
+        );
+        let rendered = render_markdown_with_attachments(&source, &|lookup, inline| {
+            (lookup.to_string() == id).then_some(if inline { "/a/image" } else { "/a" })
+        });
+        assert_eq!(rendered.as_str().matches("<img ").count(), 1);
+        assert!(
+            rendered
+                .as_str()
+                .contains(r#"src="/a/image" alt="«A» [B] &lt;tag&gt;""#)
+        );
+        assert!(
+            rendered
+                .as_str()
+                .contains("[missing](attachment:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)")
+        );
+        assert!(!rendered.as_str().contains(r#"src="https://example.test"#));
+        assert!(rendered.as_str().contains(r#"<a href="/a">Файл</a>"#));
+        assert!(!render_markdown(&source).as_str().contains("<img "));
+    }
 
     #[derive(serde::Deserialize)]
     struct ExtendedFixture {

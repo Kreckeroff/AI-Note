@@ -4,12 +4,13 @@ import {
   applyCommand, applySlashCommand, exitCodeBlock, insertVisual, moveListItem, removeVisual, toggleTask,
   updateCodeLanguage, type EditorChange,
 } from './editorChanges';
-import {availableCommands, EditorCommandMenu} from './EditorCommandMenu';
+import {availableCommands, EditorCommandMenu, type MenuAction} from './EditorCommandMenu';
 import {
   escapeLiteralText, isProtected, parseMarkdown, type EditorBlock, type EditorCommand, type MarkdownDocument, type SourceRange,
 } from './markdownModel';
 import {caretPlaceholder, protectedEdit, RichMarkdownBlocks} from './RichMarkdownBlocks';
 import {findSlashCommand, type SlashMatch} from './slashCommand';
+import type {PageAttachment} from './pageAttachments';
 
 export type {EditorCommand} from './markdownModel';
 export {decodeLegacyText} from './markdownModel';
@@ -29,6 +30,8 @@ type EditorProps = {
   onChange(change: EditorChange, before: SourceRange, kind: DraftEditKind): void;
   onHistory(direction: DraftHistoryDirection): void;
   onPasteMarkdown(range: SourceRange): void;
+  onInsertAttachmentImage?: (range: SourceRange) => void;
+  attachments: readonly PageAttachment[];
   readOnly: boolean;
   describedBy?: string;
   id?: string;
@@ -120,7 +123,8 @@ function selectSource(root: HTMLElement, model: MarkdownDocument, range: SourceR
 
 type InsertionKind = Parameters<typeof insertVisual>[4];
 
-export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPasteMarkdown, readOnly, describedBy, id, ref}: EditorProps) {
+export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPasteMarkdown, onInsertAttachmentImage,
+  attachments, readOnly, describedBy, id, ref}: EditorProps) {
   const editor = useRef<HTMLDivElement>(null);
   const selection = useRef<SourceRange | undefined>(undefined);
   const pending = useRef<{change: EditorChange; refreshMenu: boolean} | undefined>(undefined);
@@ -132,7 +136,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
   const [menu, setMenu] = useState<(SlashMatch & {active: number}) | undefined>(undefined);
   const menuId = useId();
   const model = useMemo(() => parseMarkdown(source, legacy), [source, legacy]);
-  const commands = menu ? availableCommands(menu.query) : [];
+  const commands = menu ? availableCommands(menu.query, Boolean(onInsertAttachmentImage)) : [];
 
   function currentSelection(): SourceRange {
     return editor.current && selectedRange(editor.current, model) || selection.current || {start: 0, end: 0};
@@ -167,10 +171,11 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
     focus();
   }
 
-  function selectCommand(command: EditorCommand | 'paste-markdown') {
+  function selectCommand(command: MenuAction) {
     if (!menu || readOnly) return;
     setMenu(undefined);
     if (command === 'paste-markdown') onPasteMarkdown(menu.range);
+    else if (command === 'attachment-image') onInsertAttachmentImage?.(menu.range);
     else apply(applySlashCommand(source, legacy, menu.range, command), currentSelection());
   }
 
@@ -445,7 +450,11 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       onPointerDown={() => setMenu(undefined)}
       onBlur={event => { if (event.target === event.currentTarget) setMenu(undefined); }}
     ><div key={repair}>
-      <RichMarkdownBlocks model={model} readOnly={readOnly}
+      <RichMarkdownBlocks model={model} readOnly={readOnly} attachments={attachments}
+        onRemoveImage={({start, end}) => {
+          editor.current?.focus();
+          apply({source:source.slice(0,start) + source.slice(end), legacy, start, end:start}, currentSelection());
+        }}
         onTask={block => {
           const range = blockCaret(block);
           apply(toggleTask(source, legacy, range), range);

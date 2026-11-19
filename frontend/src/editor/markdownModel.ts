@@ -19,6 +19,7 @@ export type TextRun = {
   offsets: number[];
   marks: InlineMark[];
   locked: boolean;
+  attachment?: {id: string; alt: string; image: boolean};
 };
 
 export type TableCell = SourceRange & {runs: TextRun[]};
@@ -52,6 +53,7 @@ const word = /[\p{Alphabetic}\p{Number}]/u;
 const ticks = '\u0060';
 const linkPrefix = /(!?)\[((?:\\[^\n]|[^\\[\]\n])*)\]\(/y;
 const angleText = /<[^<>\n]*>/y;
+const attachmentDestination = /^attachment:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/u;
 
 export function escapeLiteralText(value: string): string {
   return value.replace(/[!-/:-@\[-`{-~]/g, '\\$&');
@@ -129,7 +131,7 @@ function linkAt(source: string, start: number, end: number) {
     }
     else if (char === ')' && nested === 0) return {
       image: prefix[1] === '!', label, labelEnd: destination - 2, end: cursor + 1,
-      destination: decodeLegacyText(source.slice(destination, cursor)),
+      destination: source.slice(destination, cursor),
     };
     else if (char === ')') nested--;
   }
@@ -137,7 +139,7 @@ function linkAt(source: string, start: number, end: number) {
 
 function inlineTokens(source: string, start: number, end: number, links = true) {
   const marks: InlineMark[] = [];
-  const literal: (SourceRange & {locked: boolean})[] = [];
+  const literal: (SourceRange & {locked: boolean; attachment?: TextRun['attachment']})[] = [];
   const openers: EmphasisOpener[] = [];
   for (let position = start; position < end;) {
     const char = source[position];
@@ -162,14 +164,17 @@ function inlineTokens(source: string, start: number, end: number, links = true) 
     if (links && (char === '[' || (char === '!' && source[position + 1] === '['))) {
       const link = linkAt(source, position, end);
       if (link) {
-        const href = link.image || link.label === link.labelEnd ? null : httpDestination(link.destination);
+        const hasLabel = link.label < link.labelEnd;
+        const href = !link.image && hasLabel ? httpDestination(decodeLegacyText(link.destination)) : null;
         if (href) {
           const caption = inlineTokens(source, link.label, link.labelEnd, false);
           marks.push({kind: 'link', openStart: position, openEnd: link.label,
             closeStart: link.labelEnd, closeEnd: link.end, href}, ...caption.marks);
           literal.push(...caption.literal);
         } else {
-          literal.push({start: position, end: link.end, locked: true});
+          const id = link.image || hasLabel ? attachmentDestination.exec(link.destination)?.[1] : undefined;
+          const attachment = id ? {id, alt: decodeLegacyText(source.slice(link.label, link.labelEnd)), image: link.image} : undefined;
+          literal.push({start: position, end: link.end, locked: true, attachment});
         }
         position = link.end;
         continue;
@@ -261,7 +266,9 @@ function inlineRuns(source: string, start: number, end: number, legacy: boolean,
       if (offset === end) runs.push(textRun(offset, offset, active));
     } else if (literalRange) {
       if (edge === start) runs.push(textRun(edge, edge, active));
-      runs.push(textRun(edge, literalRange.end, active, literalRange.locked, true));
+      const run = textRun(edge, literalRange.end, active, literalRange.locked, true);
+      if (literalRange.attachment) run.attachment = literalRange.attachment;
+      runs.push(run);
       offset = literalRange.end;
       if (offset === end) runs.push(textRun(offset, offset, active));
     }

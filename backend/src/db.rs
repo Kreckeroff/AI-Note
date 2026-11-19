@@ -1,6 +1,7 @@
 mod configuration;
 pub(crate) mod import;
 mod page_access;
+mod page_attachments;
 mod page_cover;
 mod page_format;
 mod page_history;
@@ -9,6 +10,9 @@ mod pages;
 mod sections;
 
 pub(crate) use page_access::PageAddress;
+pub(crate) use page_attachments::{
+    Attachment, AttachmentBody, AttachmentLookup, AttachmentPatch, StageAttachment,
+};
 pub(crate) use page_cover::{CoverUpdate, PageCover, StagePageCover};
 pub(crate) use page_format::PageContentFormat;
 pub(crate) use page_history::{PageHistory, PageRevisionSnapshot, RestorePageRevision};

@@ -7,6 +7,8 @@ use crate::{
     text::fold_name,
 };
 
+mod attachments;
+
 struct Fixture {
     store: Store,
     owner: PageAddress,

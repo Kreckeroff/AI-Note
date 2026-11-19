@@ -172,10 +172,55 @@ pub(crate) enum DocumentsTarget {
     Page(Uuid),
     EditPage(Uuid),
     UploadCover(Uuid),
-    CoverImage { page: Uuid, asset: Uuid },
-    History { page: Uuid, target: HistoryTarget },
+    CoverImage {
+        page: Uuid,
+        asset: Uuid,
+    },
+    Attachment {
+        page: Uuid,
+        target: AttachmentTarget,
+    },
+    History {
+        page: Uuid,
+        target: HistoryTarget,
+    },
     NewPage(Uuid),
     Pages(Uuid),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttachmentTarget {
+    Upload { draft: Uuid, id: Uuid },
+    DraftImage { draft: Uuid, id: Uuid },
+    Published { token: Uuid, inline: bool },
+}
+
+impl AttachmentTarget {
+    fn parse<'a>(parts: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
+        match parts.next()? {
+            "drafts" => {
+                let draft = canonical_uuid(parts.next()?)?;
+                let id = canonical_uuid(parts.next()?)?;
+                match parts.next() {
+                    None => Some(Self::Upload { draft, id }),
+                    Some("image") => Some(Self::DraftImage { draft, id }),
+                    _ => None,
+                }
+            }
+            token => Some(Self::Published {
+                token: canonical_uuid(token)?,
+                inline: attachment_inline(parts.next())?,
+            }),
+        }
+    }
+}
+
+fn attachment_inline(suffix: Option<&str>) -> Option<bool> {
+    match suffix {
+        None => Some(false),
+        Some("image") => Some(true),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,6 +228,11 @@ pub(crate) enum HistoryTarget {
     List,
     Revision(i64),
     Cover(i64),
+    Attachment {
+        revision: i64,
+        id: Uuid,
+        inline: bool,
+    },
     Compare,
     Restore(i64),
 }
@@ -197,6 +247,11 @@ impl HistoryTarget {
                 match parts.next() {
                     None => Some(Self::Revision(revision)),
                     Some("cover") => Some(Self::Cover(revision)),
+                    Some("attachments") => Some(Self::Attachment {
+                        revision,
+                        id: canonical_uuid(parts.next()?)?,
+                        inline: attachment_inline(parts.next())?,
+                    }),
                     Some("restore") => Some(Self::Restore(revision)),
                     _ => None,
                 }
@@ -257,6 +312,10 @@ impl Route {
                                     asset: canonical_uuid(id)?,
                                 },
                             },
+                            Some("attachments") => DocumentsTarget::Attachment {
+                                page,
+                                target: AttachmentTarget::parse(&mut parts)?,
+                            },
                             Some("revisions") => DocumentsTarget::History {
                                 page,
                                 target: HistoryTarget::parse(&mut parts)?,
@@ -303,6 +362,20 @@ impl Route {
         )
     }
 
+    pub(crate) fn is_attachment(self) -> bool {
+        matches!(
+            self,
+            Self::Documents(DocumentsRoute {
+                target: DocumentsTarget::Attachment { .. }
+                    | DocumentsTarget::History {
+                        target: HistoryTarget::Attachment { .. },
+                        ..
+                    },
+                ..
+            })
+        )
+    }
+
     pub(crate) fn history_target(self) -> Option<HistoryTarget> {
         match self {
             Self::Documents(DocumentsRoute {
@@ -320,6 +393,10 @@ impl Route {
                 target: DocumentsTarget::Sections
                     | DocumentsTarget::Pages(_)
                     | DocumentsTarget::UploadCover(_)
+                    | DocumentsTarget::Attachment {
+                        target: AttachmentTarget::Upload { .. },
+                        ..
+                    }
                     | DocumentsTarget::History {
                         target: HistoryTarget::Restore(_),
                         ..
@@ -338,6 +415,10 @@ impl Route {
                         | DocumentsTarget::Pages(_)
                         | DocumentsTarget::EditPage(_)
                         | DocumentsTarget::UploadCover(_)
+                        | DocumentsTarget::Attachment {
+                            target: AttachmentTarget::Upload { .. },
+                            ..
+                        }
                         | DocumentsTarget::History {
                             target: HistoryTarget::Restore(_),
                             ..
@@ -412,6 +493,13 @@ pub(crate) fn page_cover_image_path(tenant: Uuid, space: Uuid, page: Uuid, asset
     format!("{}/{asset}", page_cover_upload_path(tenant, space, page))
 }
 
+pub(crate) fn attachment_draft_path(tenant: Uuid, space: Uuid, page: Uuid, draft: Uuid) -> String {
+    format!(
+        "{}/attachments/drafts/{draft}",
+        page_path(tenant, space, page)
+    )
+}
+
 pub(crate) fn section_form_path(
     path: &str,
     from: Option<Uuid>,
@@ -470,7 +558,8 @@ pub(crate) fn with_options(path: &str, options: &CatalogOptions) -> String {
 
 pub(crate) fn local_target(target: &str) -> String {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let Some(route) = Route::parse(path).filter(|route| route.allows_read() && !route.is_cover())
+    let Some(route) = Route::parse(path)
+        .filter(|route| route.allows_read() && !route.is_cover() && !route.is_attachment())
     else {
         return String::new();
     };
@@ -612,5 +701,31 @@ mod route_tests {
         assert_eq!(local_target(&image), "");
         assert!(Route::parse(&format!("{upload}/{}", file.to_string().to_uppercase())).is_none());
         assert!(Route::parse(&format!("{image}/extra")).is_none());
+    }
+
+    #[test]
+    fn attachments_have_distinct_read_and_upload_routes() {
+        let root = format!("{SPACE}/pages/{SECTION}");
+        let asset = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let base = format!("{root}/attachments");
+        let stage = format!("{base}/drafts/{SECTION}/{asset}");
+        let upload = Route::parse(&stage).unwrap();
+        assert!(upload.allows_post());
+        assert!(!upload.allows_read());
+        for path in [
+            format!("{base}/{asset}"),
+            format!("{base}/{asset}/image"),
+            format!("{stage}/image"),
+            format!("{root}/revisions/1/attachments/{asset}"),
+            format!("{root}/revisions/1/attachments/{asset}/image"),
+        ] {
+            let route = Route::parse(&path).unwrap();
+            assert!(route.allows_read());
+            assert!(!route.allows_post());
+            assert!(local_target(&path).is_empty());
+        }
+        assert!(Route::parse(&format!("{stage}/download")).is_none());
+        assert!(Route::parse(&format!("{base}/{}", asset.to_uppercase())).is_none());
+        assert!(Route::parse(&format!("{root}/revisions/01/attachments/{asset}")).is_none());
     }
 }

@@ -1,8 +1,12 @@
+mod attachments;
 mod cover;
 mod editor;
 mod history;
 mod pages;
 
+pub(crate) use attachments::{
+    unauthenticated as attachment_unauthenticated, unavailable as attachment_unavailable,
+};
 pub(crate) use cover::{cover_unauthenticated, cover_unavailable};
 pub(crate) use editor::retry_page_edit_before_authorization;
 pub(crate) use history::{
@@ -198,6 +202,16 @@ pub(crate) async fn handle(
         DocumentsTarget::CoverImage { page, asset } => {
             return cover::image(store, &nav.page_address(page, principal), asset).await;
         }
+        DocumentsTarget::Attachment { page, target } => {
+            return attachments::handle(
+                store,
+                &nav.page_address(page, principal),
+                target,
+                origin,
+                request,
+            )
+            .await;
+        }
         DocumentsTarget::History { page, target } => {
             let response = history::handle(
                 store,
@@ -294,6 +308,7 @@ pub(crate) async fn handle(
         | DocumentsTarget::Pages(_)
         | DocumentsTarget::UploadCover(_)
         | DocumentsTarget::CoverImage { .. }
+        | DocumentsTarget::Attachment { .. }
         | DocumentsTarget::History { .. } => {
             unreachable!("document writes were handled before loading the page")
         }
@@ -458,6 +473,7 @@ fn not_found(target: DocumentsTarget) -> Response {
         | DocumentsTarget::EditPage(_)
         | DocumentsTarget::UploadCover(_)
         | DocumentsTarget::CoverImage { .. }
+        | DocumentsTarget::Attachment { .. }
         | DocumentsTarget::History { .. } => views::page_not_found(),
         _ => views::section_not_found(),
     };

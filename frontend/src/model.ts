@@ -1,5 +1,6 @@
 import {isCoverUploadPath, isCoverValue, isCoverView, type CoverValue, type CoverView} from './editor/pageCover';
 import {isPageHistoryPath} from './editor/pageHistory';
+import {isAttachmentId, isAttachmentUploadPath, isPageAttachment, type PageAttachment} from './editor/pageAttachments';
 
 export interface TenantLink {
   id: string;
@@ -70,12 +71,18 @@ export interface PageReadingModel {
   renderedHtml: string | null;
   cover?: CoverView | null;
   historyTo?: string | null;
+  attachments?: PageAttachment[];
 }
 
 interface PageRevision {
   text: string;
   revision: string;
   cover?: CoverView | null;
+}
+
+interface PageEditConflict extends PageRevision {
+  source?: string;
+  contentFormat?: 'literal' | 'markdown';
 }
 
 export interface PageEditorForm extends PageRevision {
@@ -85,7 +92,7 @@ export interface PageEditorForm extends PageRevision {
   contentFormat: 'literal' | 'markdown';
   editorMode: 'visual' | 'source';
   error: string | null;
-  conflict: PageRevision | null;
+  conflict: PageEditConflict | null;
   canSave: boolean;
   coverBase?: CoverValue | null;
   coverChanged?: boolean;
@@ -93,6 +100,11 @@ export interface PageEditorForm extends PageRevision {
   historyTo?: string | null;
   textBase?: string | null;
   textUnchanged?: boolean;
+  attachments?: PageAttachment[];
+  attachmentDraft?: string | null;
+  attachmentUploadTo?: string | null;
+  attachmentAdded?: string[];
+  attachmentRemoved?: string[];
 }
 
 export interface SectionTreeModel {
@@ -210,11 +222,17 @@ function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
     (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
     (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover) &&
-    (value.historyTo == null || isPageHistoryPath(value.historyTo));
+    (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
+    (value.attachments === undefined || isList(value.attachments, isPageAttachment));
 }
 
 function isPageRevision(value: unknown): value is Fields {
   return fields(value) && strings(value, 'text', 'revision') && isOptionalCover(value.cover);
+}
+
+function isPageConflict(value: unknown): boolean {
+  return isPageRevision(value) && (value.source === undefined && value.contentFormat === undefined ||
+    typeof value.source === 'string' && (value.contentFormat === 'literal' || value.contentFormat === 'markdown'));
 }
 
 function isOptionalCover(value: unknown): boolean {
@@ -227,13 +245,18 @@ function isPageEditorForm(value: unknown): boolean {
     (value.editorMode === 'visual' || value.editorMode === 'source') &&
     (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
     (value.error === null || typeof value.error === 'string') &&
-    (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean' &&
+    (value.conflict === null || isPageConflict(value.conflict)) && typeof value.canSave === 'boolean' &&
     (value.coverBase == null || isCoverValue(value.coverBase)) &&
     (value.coverUploadTo == null || isCoverUploadPath(value.coverUploadTo)) &&
     (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
     (value.coverChanged === undefined || typeof value.coverChanged === 'boolean') &&
     (value.textBase == null || typeof value.textBase === 'string' && /^[a-f0-9]{64}$/u.test(value.textBase)) &&
-    (value.textUnchanged === undefined || typeof value.textUnchanged === 'boolean');
+    (value.textUnchanged === undefined || typeof value.textUnchanged === 'boolean') &&
+    (value.attachments === undefined || isList(value.attachments, isPageAttachment)) &&
+    (value.attachmentDraft == null || isAttachmentId(value.attachmentDraft)) &&
+    (value.attachmentUploadTo == null || isAttachmentUploadPath(value.attachmentUploadTo, value.attachmentDraft, value.action)) &&
+    (value.attachmentAdded === undefined || isList(value.attachmentAdded, isAttachmentId)) &&
+    (value.attachmentRemoved === undefined || isList(value.attachmentRemoved, isAttachmentId));
 }
 
 function isSectionTree(value: unknown): boolean {

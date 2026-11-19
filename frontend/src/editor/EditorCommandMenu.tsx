@@ -2,7 +2,7 @@ import {useLayoutEffect, useRef} from 'react';
 import {Icon} from '../Icon';
 import type {EditorCommand} from './markdownModel';
 
-type MenuAction = EditorCommand | 'paste-markdown';
+export type MenuAction = EditorCommand | 'paste-markdown' | 'attachment-image';
 type MenuEntry = {id: MenuAction; label: string; icon: Parameters<typeof Icon>[0]['name']};
 const entries: MenuEntry[] = [
   {id: 'heading', label: 'Заголовок', icon: 'file'},
@@ -13,11 +13,13 @@ const entries: MenuEntry[] = [
   {id: 'task', label: 'Чекбокс', icon: 'check'},
   {id: 'rule', label: 'Разделитель', icon: 'rule'},
   {id: 'table', label: 'Таблица', icon: 'table'},
+  {id: 'attachment-image', label: 'Изображение', icon: 'image'},
   {id: 'paste-markdown', label: 'Вставить как Markdown', icon: 'clipboard'},
 ];
 
-export function availableCommands(query: string): MenuEntry[] {
-  return entries.filter(entry => `${entry.label} ${entry.id}`.toLocaleLowerCase('ru').includes(query));
+export function availableCommands(query: string, attachments: boolean): MenuEntry[] {
+  return entries.filter(entry => (entry.id !== 'attachment-image' || attachments) &&
+    `${entry.label} ${entry.id}`.toLocaleLowerCase('ru').includes(query));
 }
 
 type MenuProps = {
