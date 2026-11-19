@@ -1,3 +1,4 @@
+import {useId, useLayoutEffect, useRef, useState} from 'react';
 import {Catalog, accessLabel} from './Catalog';
 import {CreateSpaceDialog} from './CreateSpaceDialog';
 import {DocumentCreationDialog} from './DocumentCreationDialog';
@@ -5,6 +6,7 @@ import {Icon} from './Icon';
 import {PageEditor} from './PageEditor';
 import {WorkspacePicker} from './WorkspacePicker';
 import {PageCoverArt} from './editor/CoverGallery';
+import {PageHistoryPanel} from './editor/PageHistoryPanel';
 import type {SectionTreeModel, Space, WorkspaceModel, WorkspacePageModel} from './model';
 import {newPagePath, newSectionPath, pagePath, sectionPath, spacePath, spacesPath, withOptions} from './routes';
 
@@ -30,6 +32,13 @@ function WorkspaceHeader({workspace, space}: {workspace: WorkspaceModel; space?:
 function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}) {
   const {tenant, catalog: {options}} = workspace;
   const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage, reading, editor} = tree;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyPanelId = useId();
+  const historyTrigger = useRef<HTMLButtonElement>(null);
+  const returnHistoryFocus = useRef(false);
+  const historyTo = editor ? editor.historyTo : reading?.historyTo;
+  const canOpenHistory = selectedPage && historyTo === `${pagePath(tenant.id, space.id, selectedPage.id)}/revisions`;
+  const editTo = editor ? null : reading?.editTo;
   const catalogHref = withOptions(spacesPath(tenant.id), options);
   const spaceHref = withOptions(spacePath(tenant.id, space.id), options);
   const createSectionHref = newSectionPath(tenant.id, space.id, options, selected?.id);
@@ -41,8 +50,20 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
     !sections.length ? 'В пространстве пока нет разделов' :
       !pages.length ? 'Нет доступных страниц' : 'Выберите раздел в дереве';
 
+  useLayoutEffect(() => {
+    if (!historyOpen && returnHistoryFocus.current) {
+      historyTrigger.current?.focus({preventScroll: true});
+      returnHistoryFocus.current = false;
+    }
+  }, [historyOpen]);
+
+  function dismissHistory() {
+    returnHistoryFocus.current = true;
+    setHistoryOpen(false);
+  }
+
   return (
-    <main className="documents-shell">
+    <main className={`documents-shell${canOpenHistory && historyOpen ? ' documents-shell-history-open' : ''}`}>
       <aside className="documents-tree" aria-label="Дерево пространства">
         <span className="documents-tree-title"><Icon name="folder" />{space.name}</span>
         <a href={catalogHref}><Icon name="layers" />Все пространства</a>
@@ -106,14 +127,19 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
               </div>
             </div>
           </header>
+          {selectedPage && (editTo || canOpenHistory) && (
+            <div className="document-action-row">
+              {editTo && <a className="space-action space-secondary" id="edit-page" href={editTo}>Редактировать</a>}
+              {canOpenHistory && <button type="button" ref={historyTrigger} className="space-action space-secondary"
+                aria-controls={historyOpen ? historyPanelId : undefined} aria-expanded={historyOpen}
+                onClick={() => historyOpen ? dismissHistory() : setHistoryOpen(true)}>
+                <Icon name="context" />Контекст страницы
+              </button>}
+            </div>
+          )}
           {selectedPage ? (
             editor ? <PageEditor form={editor} /> : (
               <>
-                {reading?.editTo && (
-                  <a className="space-action space-secondary document-edit-link" id="edit-page" href={reading.editTo}>
-                    Редактировать
-                  </a>
-                )}
                 {reading?.renderedHtml ? (
                   // The server supplies this fragment from its allowlisted Markdown renderer.
                   <div className="document-text document-markdown" dangerouslySetInnerHTML={{__html: reading.renderedHtml}} />
@@ -150,6 +176,8 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
           )}
         </article>
       </div>
+      {canOpenHistory && historyOpen && <PageHistoryPanel key={historyTo} id={historyPanelId} historyTo={historyTo}
+        editing={Boolean(editor)} onDismiss={dismissHistory} />}
     </main>
   );
 }

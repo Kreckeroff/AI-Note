@@ -25,6 +25,7 @@ pub(crate) struct PageReading {
     pub text: String,
     pub rendered_html: Option<RenderedMarkdown>,
     pub edit_to: Option<String>,
+    pub history_to: Option<String>,
     pub cover: CoverView,
 }
 
@@ -69,6 +70,7 @@ impl PageEditorMode {
 pub(crate) struct PageEditorForm {
     pub action: String,
     pub cancel_to: Option<String>,
+    pub history_to: Option<String>,
     pub text: String,
     pub source: String,
     pub content_format: PageContentFormat,

@@ -1,9 +1,13 @@
 mod cover;
 mod editor;
+mod history;
 mod pages;
 
 pub(crate) use cover::{cover_unauthenticated, cover_unavailable};
 pub(crate) use editor::retry_page_edit_before_authorization;
+pub(crate) use history::{
+    history_api_error, history_wants_json, retry_history_restore_before_authorization,
+};
 pub(crate) use pages::retry_before_authorization;
 
 use std::time::Duration;
@@ -194,6 +198,26 @@ pub(crate) async fn handle(
         DocumentsTarget::CoverImage { page, asset } => {
             return cover::image(store, &nav.page_address(page, principal), asset).await;
         }
+        DocumentsTarget::History { page, target } => {
+            let response = history::handle(
+                store,
+                &nav.page_address(page, principal),
+                target,
+                origin,
+                request,
+            )
+            .await?;
+            let outcome = match response.status() {
+                StatusCode::OK => "opened",
+                StatusCode::SEE_OTHER => "restored",
+                StatusCode::NOT_FOUND => "not-found",
+                StatusCode::CONFLICT => "conflict",
+                StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+                _ => "rejected",
+            };
+            record(principal.id, route, outcome);
+            return Ok(response);
+        }
         _ => {}
     }
     let Some(page) = load(store, &nav, principal).await? else {
@@ -269,7 +293,8 @@ pub(crate) async fn handle(
         DocumentsTarget::Sections
         | DocumentsTarget::Pages(_)
         | DocumentsTarget::UploadCover(_)
-        | DocumentsTarget::CoverImage { .. } => {
+        | DocumentsTarget::CoverImage { .. }
+        | DocumentsTarget::History { .. } => {
             unreachable!("document writes were handled before loading the page")
         }
     };
@@ -432,7 +457,8 @@ fn not_found(target: DocumentsTarget) -> Response {
         DocumentsTarget::Page(_)
         | DocumentsTarget::EditPage(_)
         | DocumentsTarget::UploadCover(_)
-        | DocumentsTarget::CoverImage { .. } => views::page_not_found(),
+        | DocumentsTarget::CoverImage { .. }
+        | DocumentsTarget::History { .. } => views::page_not_found(),
         _ => views::section_not_found(),
     };
     html(StatusCode::NOT_FOUND, page)
@@ -445,6 +471,7 @@ fn record(account: Uuid, route: DocumentsRoute, outcome: &str) {
         DocumentsTarget::Pages(_) => "page.create",
         DocumentsTarget::EditPage(_) => "page.edit",
         DocumentsTarget::Page(_) | DocumentsTarget::NewPage(_) => "page.open",
+        DocumentsTarget::History { .. } => "page.history",
         _ => "section.open",
     };
     eprintln!(

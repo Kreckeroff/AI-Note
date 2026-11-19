@@ -2,7 +2,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    Store,
+    PageAddress, Store,
+    page_history::record_current_snapshot,
     sections::{SPACE_ACCESS, lock_active_member},
 };
 use crate::text::{fold_name, js_trim};
@@ -121,6 +122,13 @@ impl Store {
         if added.rows_affected() == 0 {
             return Ok(CreatePage::Duplicate);
         }
+        let address = PageAddress {
+            tenant,
+            space,
+            page: id,
+            account,
+        };
+        record_current_snapshot(&mut tx, &address, Some(account), None).await?;
 
         sqlx::query(
             "INSERT INTO page_creations

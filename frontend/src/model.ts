@@ -1,4 +1,5 @@
 import {isCoverUploadPath, isCoverValue, isCoverView, type CoverValue, type CoverView} from './editor/pageCover';
+import {isPageHistoryPath} from './editor/pageHistory';
 
 export interface TenantLink {
   id: string;
@@ -68,6 +69,7 @@ export interface PageReadingModel {
   editTo: string | null;
   renderedHtml: string | null;
   cover?: CoverView | null;
+  historyTo?: string | null;
 }
 
 interface PageRevision {
@@ -88,6 +90,7 @@ export interface PageEditorForm extends PageRevision {
   coverBase?: CoverValue | null;
   coverChanged?: boolean;
   coverUploadTo?: string | null;
+  historyTo?: string | null;
   textBase?: string | null;
   textUnchanged?: boolean;
 }
@@ -206,7 +209,8 @@ function isDocumentForm(value: unknown): boolean {
 function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
     (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
-    (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover);
+    (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover) &&
+    (value.historyTo == null || isPageHistoryPath(value.historyTo));
 }
 
 function isPageRevision(value: unknown): value is Fields {
@@ -226,6 +230,7 @@ function isPageEditorForm(value: unknown): boolean {
     (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean' &&
     (value.coverBase == null || isCoverValue(value.coverBase)) &&
     (value.coverUploadTo == null || isCoverUploadPath(value.coverUploadTo)) &&
+    (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
     (value.coverChanged === undefined || typeof value.coverChanged === 'boolean') &&
     (value.textBase == null || typeof value.textBase === 'string' && /^[a-f0-9]{64}$/u.test(value.textBase)) &&
     (value.textUnchanged === undefined || typeof value.textUnchanged === 'boolean');

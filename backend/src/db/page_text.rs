@@ -1,4 +1,3 @@
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -6,27 +5,12 @@ use uuid::Uuid;
 use crate::text::{markdown_to_text, normalize_line_endings, text_to_markdown};
 
 use super::{
-    Store,
+    PageContentFormat, Store,
     page_access::{PageAddress, PageEditAccess, lock_page_for_edit},
     page_cover::{CoverUpdate, PageCover, update_page_cover},
+    page_history::{ensure_baseline, record_current_snapshot},
     sections::SPACE_ACCESS,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum PageContentFormat {
-    Literal,
-    Markdown,
-}
-
-impl PageContentFormat {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Literal => "literal",
-            Self::Markdown => "markdown",
-        }
-    }
-}
 
 pub(crate) struct PageText {
     pub source: String,
@@ -156,11 +140,7 @@ async fn read(
     Ok(row.map(
         |(source, is_markdown, content_revision, can_edit, theme, asset_id)| PageText {
             source,
-            format: if is_markdown {
-                PageContentFormat::Markdown
-            } else {
-                PageContentFormat::Literal
-            },
+            format: PageContentFormat::from_markdown(is_markdown),
             content_revision,
             can_edit,
             cover: PageCover::from_storage(theme.as_deref(), asset_id),
@@ -224,6 +204,7 @@ impl Store {
         if current.content_revision != base_revision {
             return Ok(SavePageText::Conflict(current));
         }
+        ensure_baseline(&mut tx, address).await?;
         if selected != current.cover
             && !update_page_cover(&mut tx, address, current.cover, selected).await?
         {
@@ -252,6 +233,13 @@ impl Store {
         .bind(address.space)
         .bind(address.page)
         .execute(&mut *tx)
+        .await?;
+        record_current_snapshot(
+            &mut tx,
+            address,
+            Some(address.account),
+            (selected == current.cover).then_some(base_revision),
+        )
         .await?;
         if let Some(receipt) = receipt {
             receipt.record(&mut tx, address).await?;

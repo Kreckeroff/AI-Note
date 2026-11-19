@@ -48,6 +48,13 @@ pub(super) fn page_contents(tree: &SectionScreen) -> String {
             html(edit_to),
         ));
     }
+    if let Some(history_to) = tree
+        .reading
+        .as_ref()
+        .and_then(|reading| reading.history_to.as_ref())
+    {
+        content.push_str(&history_link(history_to, false));
+    }
     let body = tree.reading.as_ref().and_then(|reading| {
         match reading.rendered_html.as_ref().map(|html| html.as_str()) {
             Some(rendered) if !rendered.is_empty() => Some(format!(
@@ -67,7 +74,26 @@ pub(super) fn page_contents(tree: &SectionScreen) -> String {
     content
 }
 
+fn history_link(to: &str, editing: bool) -> String {
+    let to = html(to);
+    let (suffix, attributes) = if editing {
+        (
+            "?preview=1",
+            r#" target="_blank" rel="noopener" aria-label="История (в новой вкладке)""#,
+        )
+    } else {
+        ("", "")
+    };
+    format!(
+        r#"<a class="space-action space-secondary document-edit-link" href="{to}{suffix}"{attributes}>История</a>"#
+    )
+}
+
 fn page_editor(form: &PageEditorForm) -> String {
+    let history = form
+        .history_to
+        .as_deref()
+        .map_or_else(String::new, |to| history_link(to, true));
     let error = form.error.map_or_else(String::new, |message| {
         format!(
             r#"<p id="page-editor-error" class="form-error" role="alert">{}</p>"#,
@@ -184,7 +210,7 @@ fn page_editor(form: &PageEditorForm) -> String {
       {cover_choice}
       {rebase}
       {text_note}
-      <div class="page-editor-actions"><span class="page-editor-status" role="status"></span>{cancel}{save}</div>
+      <div class="page-editor-actions"><span class="page-editor-status" role="status"></span>{history}{cancel}{save}</div>
     </form>"#,
         action = html(&form.action),
         revision = html(&form.revision),

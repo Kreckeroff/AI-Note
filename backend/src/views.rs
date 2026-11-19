@@ -1,6 +1,7 @@
 mod account;
 mod client;
 mod editor;
+pub(crate) mod history;
 mod sections;
 mod workspace;
 

@@ -62,7 +62,7 @@ pub(super) async fn lock_active_member(
     Ok(member.is_some())
 }
 
-fn decode_title(title: Vec<u8>, column: &str) -> Result<String, sqlx::Error> {
+pub(super) fn decode_title(title: Vec<u8>, column: &str) -> Result<String, sqlx::Error> {
     String::from_utf8(title).map_err(|source| sqlx::Error::ColumnDecode {
         index: column.to_owned(),
         source: Box::new(source),

@@ -18,7 +18,9 @@ use crate::{
     identity::{self, Identity, LoginOutcome},
     registration::Registration,
     sections_http, views,
-    workspace::{DocumentsRoute, DocumentsTarget, Route, WORKSPACE_PATH, local_target},
+    workspace::{
+        DocumentsRoute, DocumentsTarget, HistoryTarget, Route, WORKSPACE_PATH, local_target,
+    },
     workspace_http,
 };
 
@@ -88,6 +90,9 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                     .map_or("", |part| part.as_str()),
             );
             let route = Route::parse(request.uri().path());
+            let history_target = route.and_then(Route::history_target);
+            let history_json = history_target == Some(HistoryTarget::List)
+                && sections_http::history_wants_json(request.headers());
             let catalog = route.is_some_and(Route::is_catalog);
             let documents_read =
                 matches!(route, Some(Route::Documents(_))) && is_read && !target.is_empty();
@@ -103,6 +108,8 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                     }
                     if route.is_some_and(Route::is_cover) {
                         sections_http::cover_unavailable(is_read)
+                    } else if history_json {
+                        sections_http::history_api_error(StatusCode::SERVICE_UNAVAILABLE)
                     } else if catalog {
                         html(
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -205,7 +212,13 @@ impl Server {
         let preserve_submission = match route {
             Route::Documents(
                 documents @ DocumentsRoute {
-                    target: DocumentsTarget::Pages(_) | DocumentsTarget::EditPage(_),
+                    target:
+                        DocumentsTarget::Pages(_)
+                        | DocumentsTarget::EditPage(_)
+                        | DocumentsTarget::History {
+                            target: HistoryTarget::Restore(_),
+                            ..
+                        },
                     ..
                 },
             ) if request.method() == Method::POST => Some(documents),
@@ -242,6 +255,19 @@ impl Server {
                             )
                             .await
                         }
+                        DocumentsTarget::History {
+                            page,
+                            target: HistoryTarget::Restore(revision),
+                        } => {
+                            sections_http::retry_history_restore_before_authorization(
+                                documents,
+                                page,
+                                revision,
+                                &self.origin,
+                                request,
+                            )
+                            .await
+                        }
                         _ => unreachable!("only document form writes use early session timeout"),
                     });
                 }
@@ -250,8 +276,14 @@ impl Server {
             identify.await?
         };
         let Some(principal) = principal else {
+            let history_target = route.history_target();
             if route.is_cover() {
                 return Ok(sections_http::cover_unauthenticated(is_read));
+            }
+            if history_target == Some(HistoryTarget::List)
+                && sections_http::history_wants_json(request.headers())
+            {
+                return Ok(sections_http::history_api_error(StatusCode::UNAUTHORIZED));
             }
             let target = local_target(
                 request
@@ -863,6 +895,115 @@ mod tests {
             assert_eq!(response.status(), status);
             assert!(!response.headers().contains_key(header::LOCATION));
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
+
+    #[tokio::test]
+    async fn private_history_keeps_binary_and_json_routes_off_the_login_redirect() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333/revisions",
+        );
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        for (suffix, accept, status) in [
+            ("/12/cover", "image/jpeg", StatusCode::NOT_FOUND),
+            ("", "application/json", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder()
+                .uri(format!("{PATH}{suffix}"))
+                .header(header::HOST, &server.host)
+                .header(header::ACCEPT, accept)
+                .body(Body::empty())
+                .unwrap();
+            let response = dispatch(State(server.clone()), request).await;
+            assert_eq!(response.status(), status);
+            assert!(!response.headers().contains_key(header::LOCATION));
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+        let request = Request::builder()
+            .uri(format!("{PATH}/12?preview=1"))
+            .header(header::HOST, &server.host)
+            .body(Body::empty())
+            .unwrap();
+        let response = dispatch(State(server), request).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
+        let query = Form::from_query(location.strip_prefix("/?").unwrap());
+        assert_eq!(query.get("returnTo"), format!("{PATH}/12?preview=1"));
+    }
+
+    #[tokio::test]
+    async fn restore_retry_preserves_only_the_confirmed_intent_when_auth_is_unavailable() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333/revisions/6/restore",
+        );
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        for (path, origin, form, status) in [
+            (
+                PATH,
+                server.origin.as_str(),
+                "baseRevision=8&error=private-payload",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                PATH,
+                server.origin.as_str(),
+                "baseRevision=8&baseRevision=9",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                PATH,
+                "https://not-the-workspace.test",
+                "baseRevision=8",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                &format!("{PATH}?preview=1"),
+                server.origin.as_str(),
+                "baseRevision=8",
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(path)
+                .method(Method::POST)
+                .header(header::HOST, &server.host)
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap();
+            let response = dispatch(State(server.clone()), request).await;
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body = response_text(response).await.unwrap();
+            if status == StatusCode::SERVICE_UNAVAILABLE {
+                assert!(body.contains(&format!(r#"action="{PATH}""#)));
+                assert!(body.contains(r#"name="baseRevision" value="8""#));
+                assert!(!body.contains("private-payload"));
+                assert!(!body.contains("Текущая редакция"));
+            } else {
+                assert!(!body.contains(r#"name="baseRevision""#));
+            }
         }
     }
 

@@ -173,8 +173,36 @@ pub(crate) enum DocumentsTarget {
     EditPage(Uuid),
     UploadCover(Uuid),
     CoverImage { page: Uuid, asset: Uuid },
+    History { page: Uuid, target: HistoryTarget },
     NewPage(Uuid),
     Pages(Uuid),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HistoryTarget {
+    List,
+    Revision(i64),
+    Cover(i64),
+    Compare,
+    Restore(i64),
+}
+
+impl HistoryTarget {
+    fn parse<'a>(parts: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
+        match parts.next() {
+            None => Some(Self::List),
+            Some("compare") => Some(Self::Compare),
+            Some(number) => {
+                let revision = revision_number(number)?;
+                match parts.next() {
+                    None => Some(Self::Revision(revision)),
+                    Some("cover") => Some(Self::Cover(revision)),
+                    Some("restore") => Some(Self::Restore(revision)),
+                    _ => None,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -229,6 +257,10 @@ impl Route {
                                     asset: canonical_uuid(id)?,
                                 },
                             },
+                            Some("revisions") => DocumentsTarget::History {
+                                page,
+                                target: HistoryTarget::parse(&mut parts)?,
+                            },
                             _ => return None,
                         }
                     }
@@ -260,10 +292,25 @@ impl Route {
         matches!(
             self,
             Self::Documents(DocumentsRoute {
-                target: DocumentsTarget::UploadCover(_) | DocumentsTarget::CoverImage { .. },
+                target: DocumentsTarget::UploadCover(_)
+                    | DocumentsTarget::CoverImage { .. }
+                    | DocumentsTarget::History {
+                        target: HistoryTarget::Cover(_),
+                        ..
+                    },
                 ..
             })
         )
+    }
+
+    pub(crate) fn history_target(self) -> Option<HistoryTarget> {
+        match self {
+            Self::Documents(DocumentsRoute {
+                target: DocumentsTarget::History { target, .. },
+                ..
+            }) => Some(target),
+            _ => None,
+        }
     }
 
     pub(crate) fn allows_read(self) -> bool {
@@ -272,7 +319,11 @@ impl Route {
             Self::Documents(DocumentsRoute {
                 target: DocumentsTarget::Sections
                     | DocumentsTarget::Pages(_)
-                    | DocumentsTarget::UploadCover(_),
+                    | DocumentsTarget::UploadCover(_)
+                    | DocumentsTarget::History {
+                        target: HistoryTarget::Restore(_),
+                        ..
+                    },
                 ..
             })
         )
@@ -286,7 +337,11 @@ impl Route {
                     target: DocumentsTarget::Sections
                         | DocumentsTarget::Pages(_)
                         | DocumentsTarget::EditPage(_)
-                        | DocumentsTarget::UploadCover(_),
+                        | DocumentsTarget::UploadCover(_)
+                        | DocumentsTarget::History {
+                            target: HistoryTarget::Restore(_),
+                            ..
+                        },
                     ..
                 })
         )
@@ -296,6 +351,17 @@ impl Route {
 pub(crate) fn canonical_uuid(value: &str) -> Option<Uuid> {
     let id = Uuid::parse_str(value).ok()?;
     (value == id.to_string()).then_some(id)
+}
+
+pub(crate) fn revision_number(value: &str) -> Option<i64> {
+    if value
+        .as_bytes()
+        .first()
+        .is_none_or(|first| !matches!(first, b'1'..=b'9'))
+    {
+        return None;
+    }
+    value.parse().ok()
 }
 
 pub(crate) fn spaces_path(tenant: Uuid) -> String {
@@ -332,6 +398,10 @@ pub(crate) fn page_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
 
 pub(crate) fn page_edit_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
     format!("{}/edit", page_path(tenant, space, page))
+}
+
+pub(crate) fn page_history_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
+    format!("{}/revisions", page_path(tenant, space, page))
 }
 
 pub(crate) fn page_cover_upload_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
@@ -410,6 +480,10 @@ pub(crate) fn local_target(target: &str) -> String {
             target: DocumentsTarget::NewSection,
             ..
         }) => section_form_path(path, section_origin(query), &options),
+        Route::Documents(DocumentsRoute {
+            target: DocumentsTarget::History { target, .. },
+            ..
+        }) => history_return_to(path, query, target),
         _ => with_options(path, &options),
     };
     if destination.len() > 1400 {
@@ -419,12 +493,69 @@ pub(crate) fn local_target(target: &str) -> String {
     }
 }
 
+fn history_return_to(path: &str, query: &str, target: HistoryTarget) -> String {
+    let form = crate::http::Form::from_query(query);
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    let number_fields: &[&str] = match target {
+        HistoryTarget::List => &["before"],
+        HistoryTarget::Compare => &["from", "to"],
+        _ => &[],
+    };
+    for name in number_fields {
+        let value = form.get(name);
+        if revision_number(value).is_some() {
+            query.append_pair(name, value);
+        }
+    }
+    if form.get("preview") == "1" {
+        query.append_pair("preview", "1");
+    } else if matches!(target, HistoryTarget::Revision(_)) && form.get("restore") == "1" {
+        query.append_pair("restore", "1");
+    }
+    let query = query.finish();
+    if query.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{query}")
+    }
+}
+
 #[cfg(test)]
 mod route_tests {
     use super::*;
 
     const SPACE: &str = "/workspace/11111111-1111-1111-1111-111111111111/spaces/22222222-2222-2222-2222-222222222222";
     const SECTION: &str = "33333333-3333-3333-3333-333333333333";
+
+    #[test]
+    fn history_login_retains_canonical_read_state() {
+        let root = format!("{SPACE}/pages/{SECTION}/revisions");
+        for suffix in [
+            "",
+            "/5",
+            "/compare?from=2&to=5&preview=1",
+            "?before=4&preview=1",
+        ] {
+            let url = format!("{root}{suffix}");
+            assert_eq!(local_target(&url), url);
+        }
+        assert_eq!(
+            local_target(&format!("{root}/5?preview=1&restore=1")),
+            format!("{root}/5?preview=1")
+        );
+        assert_eq!(local_target(&format!("{root}/5/cover")), "");
+        assert_eq!(local_target(&format!("{root}/5/restore")), "");
+        for suffix in [
+            "/00",
+            "/0",
+            "/+1",
+            "/01",
+            "/9223372036854775808",
+            "/5/extra",
+        ] {
+            assert!(Route::parse(&format!("{root}{suffix}")).is_none());
+        }
+    }
 
     #[test]
     fn section_links_restore_the_section_and_catalog_options_after_login() {

@@ -18,8 +18,8 @@ use crate::{
     text::{markdown_to_text, normalize_line_endings, text_to_markdown},
     views,
     workspace::{
-        DocumentsRoute, DocumentsTarget, page_cover_upload_path, page_edit_path, page_path,
-        with_options,
+        DocumentsRoute, DocumentsTarget, page_cover_upload_path, page_edit_path, page_history_path,
+        page_path, with_options,
     },
 };
 
@@ -181,6 +181,8 @@ impl Submission {
             .or_else(|| conflict.as_ref().map(|current| current.cover.clone()));
         PageEditorForm {
             action: edit_to(nav, page),
+            history_to: (can_save && cancel_to.is_some())
+                .then(|| page_history_path(route.tenant, route.space, page)),
             cancel_to,
             text: self.text,
             source: self.source,
@@ -315,6 +317,7 @@ pub(super) async fn open(
         selected.editor = Some(PageEditorForm {
             action: edit_to(nav, id),
             cancel_to: Some(return_to(nav, id)),
+            history_to: Some(page_history_path(route.tenant, route.space, id)),
             text,
             source,
             content_format: current.format,
@@ -342,6 +345,9 @@ pub(super) async fn open(
             text,
             rendered_html,
             edit_to: current.can_edit.then(|| edit_to(nav, id)),
+            history_to: current
+                .can_edit
+                .then(|| page_history_path(route.tenant, route.space, id)),
             cover: cover_view(route, id, current.cover),
         });
     }
