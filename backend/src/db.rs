@@ -1,10 +1,14 @@
 mod configuration;
 pub(crate) mod import;
+mod page_access;
+mod page_cover;
 mod page_text;
 mod pages;
 mod sections;
 
-pub(crate) use page_text::{PageAddress, PageContentFormat, PageText, PageUpdate, SavePageText};
+pub(crate) use page_access::PageAddress;
+pub(crate) use page_cover::{CoverUpdate, PageCover, StagePageCover};
+pub(crate) use page_text::{PageContentFormat, PageText, PageUpdate, SavePageText};
 pub(crate) use pages::{CreatePage, CreatePageInput, Page};
 pub(crate) use sections::{CreateSection, Section, SectionTree};
 

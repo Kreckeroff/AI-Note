@@ -1,4 +1,5 @@
 mod admin;
+mod cover_image;
 mod db;
 mod http;
 mod identity;

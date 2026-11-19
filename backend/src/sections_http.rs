@@ -1,6 +1,8 @@
+mod cover;
 mod editor;
 mod pages;
 
+pub(crate) use cover::{cover_unauthenticated, cover_unavailable};
 pub(crate) use editor::retry_page_edit_before_authorization;
 pub(crate) use pages::retry_before_authorization;
 
@@ -15,7 +17,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    db::{CreateSection, Page, Principal, Section, SectionTree, Space, Store},
+    db::{CreateSection, Page, PageAddress, Principal, Section, SectionTree, Space, Store},
     http::{self, html, plain, redirect},
     sections::{NameForm, PageEditorForm, PageReading, SectionScreen},
     views,
@@ -48,6 +50,15 @@ impl DocumentNavigation {
             route,
             options: CatalogOptions::parse(query),
             from: section_origin(query),
+        }
+    }
+
+    fn page_address(&self, page: Uuid, principal: &Principal) -> PageAddress {
+        PageAddress {
+            tenant: self.route.tenant,
+            space: self.route.space,
+            page,
+            account: principal.id,
         }
     }
 
@@ -177,6 +188,12 @@ pub(crate) async fn handle(
         DocumentsTarget::EditPage(id) if request.method() == Method::POST => {
             return Ok(editor::submit(store, &nav, id, principal, origin, request).await);
         }
+        DocumentsTarget::UploadCover(page) => {
+            return cover::upload(store, &nav.page_address(page, principal), origin, request).await;
+        }
+        DocumentsTarget::CoverImage { page, asset } => {
+            return cover::image(store, &nav.page_address(page, principal), asset).await;
+        }
         _ => {}
     }
     let Some(page) = load(store, &nav, principal).await? else {
@@ -249,7 +266,10 @@ pub(crate) async fn handle(
                 Some(CreationDialog::Page(form)),
             )
         }
-        DocumentsTarget::Sections | DocumentsTarget::Pages(_) => {
+        DocumentsTarget::Sections
+        | DocumentsTarget::Pages(_)
+        | DocumentsTarget::UploadCover(_)
+        | DocumentsTarget::CoverImage { .. } => {
             unreachable!("document writes were handled before loading the page")
         }
     };
@@ -409,7 +429,10 @@ async fn submit(
 fn not_found(target: DocumentsTarget) -> Response {
     let page = match target {
         DocumentsTarget::Space => views::space_not_found(),
-        DocumentsTarget::Page(_) | DocumentsTarget::EditPage(_) => views::page_not_found(),
+        DocumentsTarget::Page(_)
+        | DocumentsTarget::EditPage(_)
+        | DocumentsTarget::UploadCover(_)
+        | DocumentsTarget::CoverImage { .. } => views::page_not_found(),
         _ => views::section_not_found(),
     };
     html(StatusCode::NOT_FOUND, page)

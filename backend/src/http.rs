@@ -39,7 +39,7 @@ pub(crate) fn finish(response: &mut Response, head: bool) {
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
     headers.entry(header::CONTENT_SECURITY_POLICY).or_insert(HeaderValue::from_static(
-        "default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     ));
     headers
         .entry(header::X_CONTENT_TYPE_OPTIONS)

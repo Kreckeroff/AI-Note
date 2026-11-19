@@ -1,3 +1,5 @@
+import {isCoverUploadPath, isCoverValue, isCoverView, type CoverValue, type CoverView} from './editor/pageCover';
+
 export interface TenantLink {
   id: string;
   name: string;
@@ -65,11 +67,13 @@ export interface PageReadingModel {
   text: string;
   editTo: string | null;
   renderedHtml: string | null;
+  cover?: CoverView | null;
 }
 
 interface PageRevision {
   text: string;
   revision: string;
+  cover?: CoverView | null;
 }
 
 export interface PageEditorForm extends PageRevision {
@@ -81,6 +85,11 @@ export interface PageEditorForm extends PageRevision {
   error: string | null;
   conflict: PageRevision | null;
   canSave: boolean;
+  coverBase?: CoverValue | null;
+  coverChanged?: boolean;
+  coverUploadTo?: string | null;
+  textBase?: string | null;
+  textUnchanged?: boolean;
 }
 
 export interface SectionTreeModel {
@@ -197,11 +206,15 @@ function isDocumentForm(value: unknown): boolean {
 function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
     (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
-    (value.editTo === null || isWorkspacePath(value.editTo));
+    (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover);
 }
 
 function isPageRevision(value: unknown): value is Fields {
-  return fields(value) && strings(value, 'text', 'revision');
+  return fields(value) && strings(value, 'text', 'revision') && isOptionalCover(value.cover);
+}
+
+function isOptionalCover(value: unknown): boolean {
+  return value == null || isCoverView(value);
 }
 
 function isPageEditorForm(value: unknown): boolean {
@@ -210,7 +223,12 @@ function isPageEditorForm(value: unknown): boolean {
     (value.editorMode === 'visual' || value.editorMode === 'source') &&
     (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
     (value.error === null || typeof value.error === 'string') &&
-    (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean';
+    (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean' &&
+    (value.coverBase == null || isCoverValue(value.coverBase)) &&
+    (value.coverUploadTo == null || isCoverUploadPath(value.coverUploadTo)) &&
+    (value.coverChanged === undefined || typeof value.coverChanged === 'boolean') &&
+    (value.textBase == null || typeof value.textBase === 'string' && /^[a-f0-9]{64}$/u.test(value.textBase)) &&
+    (value.textUnchanged === undefined || typeof value.textUnchanged === 'boolean');
 }
 
 function isSectionTree(value: unknown): boolean {

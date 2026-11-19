@@ -171,6 +171,8 @@ pub(crate) enum DocumentsTarget {
     Sections,
     Page(Uuid),
     EditPage(Uuid),
+    UploadCover(Uuid),
+    CoverImage { page: Uuid, asset: Uuid },
     NewPage(Uuid),
     Pages(Uuid),
 }
@@ -220,6 +222,13 @@ impl Route {
                         match parts.next() {
                             None => DocumentsTarget::Page(page),
                             Some("edit") => DocumentsTarget::EditPage(page),
+                            Some("cover") => match parts.next() {
+                                None => DocumentsTarget::UploadCover(page),
+                                Some(id) => DocumentsTarget::CoverImage {
+                                    page,
+                                    asset: canonical_uuid(id)?,
+                                },
+                            },
                             _ => return None,
                         }
                     }
@@ -247,11 +256,23 @@ impl Route {
         matches!(self, Self::Current | Self::Collection(_))
     }
 
+    pub(crate) fn is_cover(self) -> bool {
+        matches!(
+            self,
+            Self::Documents(DocumentsRoute {
+                target: DocumentsTarget::UploadCover(_) | DocumentsTarget::CoverImage { .. },
+                ..
+            })
+        )
+    }
+
     pub(crate) fn allows_read(self) -> bool {
         !matches!(
             self,
             Self::Documents(DocumentsRoute {
-                target: DocumentsTarget::Sections | DocumentsTarget::Pages(_),
+                target: DocumentsTarget::Sections
+                    | DocumentsTarget::Pages(_)
+                    | DocumentsTarget::UploadCover(_),
                 ..
             })
         )
@@ -264,7 +285,8 @@ impl Route {
                 | Self::Documents(DocumentsRoute {
                     target: DocumentsTarget::Sections
                         | DocumentsTarget::Pages(_)
-                        | DocumentsTarget::EditPage(_),
+                        | DocumentsTarget::EditPage(_)
+                        | DocumentsTarget::UploadCover(_),
                     ..
                 })
         )
@@ -310,6 +332,14 @@ pub(crate) fn page_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
 
 pub(crate) fn page_edit_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
     format!("{}/edit", page_path(tenant, space, page))
+}
+
+pub(crate) fn page_cover_upload_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
+    format!("{}/cover", page_path(tenant, space, page))
+}
+
+pub(crate) fn page_cover_image_path(tenant: Uuid, space: Uuid, page: Uuid, asset: Uuid) -> String {
+    format!("{}/{asset}", page_cover_upload_path(tenant, space, page))
 }
 
 pub(crate) fn section_form_path(
@@ -370,7 +400,8 @@ pub(crate) fn with_options(path: &str, options: &CatalogOptions) -> String {
 
 pub(crate) fn local_target(target: &str) -> String {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let Some(route) = Route::parse(path).filter(|route| route.allows_read()) else {
+    let Some(route) = Route::parse(path).filter(|route| route.allows_read() && !route.is_cover())
+    else {
         return String::new();
     };
     let options = CatalogOptions::parse(query);
@@ -429,5 +460,26 @@ mod route_tests {
             assert!(route.allows_read());
             assert!(!route.allows_post());
         }
+    }
+
+    #[test]
+    fn cover_routes_require_canonical_ids_and_are_never_login_destinations() {
+        let tenant = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let space = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let page = Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+        let file = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let upload = page_cover_upload_path(tenant, space, page);
+        let image = page_cover_image_path(tenant, space, page, file);
+
+        let upload_route = Route::parse(&upload).expect("cover upload route");
+        assert!(upload_route.allows_post());
+        assert!(!upload_route.allows_read());
+        let image_route = Route::parse(&image).expect("cover image route");
+        assert!(image_route.allows_read());
+        assert!(!image_route.allows_post());
+        assert!(image_route.is_cover());
+        assert_eq!(local_target(&image), "");
+        assert!(Route::parse(&format!("{upload}/{}", file.to_string().to_uppercase())).is_none());
+        assert!(Route::parse(&format!("{image}/extra")).is_none());
     }
 }

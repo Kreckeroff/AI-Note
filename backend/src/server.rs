@@ -73,6 +73,7 @@ async fn shutdown() {
 
 async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Response {
     let head = request.method() == Method::HEAD;
+    let is_read = head || request.method() == Method::GET;
     let mut response =
         if http::single_header(request.headers(), header::HOST) != Some(state.host.as_str()) {
             plain(
@@ -88,9 +89,8 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
             );
             let route = Route::parse(request.uri().path());
             let catalog = route.is_some_and(Route::is_catalog);
-            let documents_read = matches!(route, Some(Route::Documents(_)))
-                && matches!(*request.method(), Method::GET | Method::HEAD)
-                && !target.is_empty();
+            let documents_read =
+                matches!(route, Some(Route::Documents(_))) && is_read && !target.is_empty();
             match tokio::time::timeout(Duration::from_secs(15), state.handle(request)).await {
                 Ok(Ok(response)) => response,
                 failure => {
@@ -101,7 +101,9 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                         Err(_) => eprintln!("request.failed category=timeout"),
                         Ok(Ok(_)) => unreachable!(),
                     }
-                    if catalog {
+                    if route.is_some_and(Route::is_cover) {
+                        sections_http::cover_unavailable(is_read)
+                    } else if catalog {
                         html(
                             StatusCode::SERVICE_UNAVAILABLE,
                             views::catalog_unavailable(if target.is_empty() {
@@ -248,6 +250,9 @@ impl Server {
             identify.await?
         };
         let Some(principal) = principal else {
+            if route.is_cover() {
+                return Ok(sections_http::cover_unauthenticated(is_read));
+            }
             let target = local_target(
                 request
                     .uri()
@@ -613,10 +618,12 @@ mod tests {
         assert!(script < body.find("data-native-page-editor").unwrap());
         if let Some(bundle) = body.find(r#"src="/sever-ui.js""#) {
             assert!(script < bundle);
+            assert!(body.contains(r#""textUnchanged":true"#));
         }
         assert!(body.contains("name=\"revision\" value=\"1\""));
         assert!(body.contains(r#"name="contentFormat" value="literal""#));
         assert!(body.contains(r#"name="editorMode" value="visual""#));
+        assert!(body.contains(r#"name="textBase" value=""#));
         assert!(body.contains("data-native-source"));
         assert!(body.contains("autofocus>\n</textarea>"));
         let read_only = send(editor_token, &edit_to, None).await;
@@ -825,11 +832,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_post_preserves_draft_if_session_lookup_is_unavailable() {
+    async fn cover_routes_do_not_redirect_to_login_or_serve_public_bytes() {
         const PATH: &str = concat!(
             "/workspace/11111111-1111-1111-1111-111111111111",
             "/spaces/22222222-2222-2222-2222-222222222222",
-            "/pages/33333333-3333-3333-3333-333333333333/edit",
+            "/pages/33333333-3333-3333-3333-333333333333/cover",
         );
         let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
         pool.close().await;
@@ -840,7 +847,43 @@ mod tests {
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
-        let request = |origin: &str, source: Option<(&str, &str, &str)>| {
+        let image = format!("{PATH}/44444444-4444-4444-4444-444444444444");
+        for (method, path, status) in [
+            (Method::GET, image.as_str(), StatusCode::NOT_FOUND),
+            (Method::HEAD, image.as_str(), StatusCode::NOT_FOUND),
+            (Method::POST, PATH, StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, &server.host)
+                .body(Body::empty())
+                .unwrap();
+            let response = dispatch(State(server.clone()), request).await;
+            assert_eq!(response.status(), status);
+            assert!(!response.headers().contains_key(header::LOCATION));
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_post_preserves_draft_if_session_lookup_is_unavailable() {
+        const PATH: &str = concat!(
+            "/workspace/11111111-1111-1111-1111-111111111111",
+            "/spaces/22222222-2222-2222-2222-222222222222",
+            "/pages/33333333-3333-3333-3333-333333333333/edit",
+        );
+        const TEXT_BASE: &str = "ed2156d2825d29550727a3adf2be2ae2c609c5fca0844a2a978d626eae68c69b";
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        pool.close().await;
+        let server = Arc::new(Server {
+            store: Store::from_test_pool(pool),
+            identity: Identity::new(),
+            registration: None,
+            host: "localhost:4125".to_owned(),
+            origin: "http://localhost:4125".to_owned(),
+        });
+        let request = |origin: &str, source: Option<(&str, &str, &str)>, cover: Option<&str>| {
             let mut form = url::form_urlencoded::Serializer::new(String::new());
             form.append_pair("revision", "8");
             if let Some((source, format, mode)) = source {
@@ -849,6 +892,11 @@ mod tests {
                     .append_pair("editorMode", mode);
             } else {
                 form.append_pair("text", "\nЧерновик <текста>\n\nПовтор");
+            }
+            if let Some(cover) = cover {
+                form.append_pair("cover", cover)
+                    .append_pair("coverBase", "grid")
+                    .append_pair("textBase", TEXT_BASE);
             }
             Request::builder()
                 .uri(format!("{PATH}?scope=mine"))
@@ -860,7 +908,7 @@ mod tests {
                 .body(Body::from(form.finish()))
                 .unwrap()
         };
-        let response = dispatch(State(server.clone()), request(&server.origin, None)).await;
+        let response = dispatch(State(server.clone()), request(&server.origin, None, None)).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
@@ -876,21 +924,49 @@ mod tests {
         let markdown = "\n## Точный исходник\n\n**Черновик**  \n";
         let retry = dispatch(
             State(server.clone()),
-            request(&server.origin, Some((markdown, "markdown", "source"))),
+            request(
+                &server.origin,
+                Some((markdown, "markdown", "source")),
+                Some("image:44444444-4444-4444-4444-444444444444"),
+            ),
         )
         .await;
         assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let policy = retry.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(
+            policy
+                .split(';')
+                .map(str::trim)
+                .any(|part| part == "connect-src 'self'")
+        );
+        assert!(
+            policy
+                .split(';')
+                .map(str::trim)
+                .any(|part| part == "img-src 'self'")
+        );
         let body = to_bytes(retry.into_body(), 64 * 1024).await.unwrap();
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains(markdown));
         assert!(body.contains(r#"name="revision" value="8""#));
         assert!(body.contains(r#"name="contentFormat" value="markdown""#));
         assert!(body.contains(r#"name="editorMode" value="source""#));
+        assert!(
+            body.contains(r#"name="cover" value="image:44444444-4444-4444-4444-444444444444""#)
+        );
+        assert!(body.contains(r#"name="coverBase" value="grid""#));
+        assert!(body.contains("/cover/44444444-4444-4444-4444-444444444444"));
+        assert!(body.contains(&format!(r#"name="textBase" value="{TEXT_BASE}""#)));
+        if body.contains(r#"src="/sever-ui.js""#) {
+            assert!(body.contains(r#""textUnchanged":true"#));
+        }
 
         let literal = "\n## Прежний буквальный текст\n\n**Черновик**  \n";
         let retry = dispatch(
             State(server.clone()),
-            request(&server.origin, Some((literal, "literal", "visual"))),
+            request(&server.origin, Some((literal, "literal", "visual")), None),
         )
         .await;
         assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -901,7 +977,11 @@ mod tests {
         assert!(body.contains(r#"name="editorMode" value="visual""#));
         assert!(!body.contains("data-native-source"));
 
-        let foreign = dispatch(State(server.clone()), request("http://foreign.test", None)).await;
+        let foreign = dispatch(
+            State(server.clone()),
+            request("http://foreign.test", None, None),
+        )
+        .await;
         assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
         let body = to_bytes(foreign.into_body(), 4096).await.unwrap();
         assert!(!std::str::from_utf8(&body).unwrap().contains("Черновик"));

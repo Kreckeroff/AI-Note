@@ -4,6 +4,7 @@ import {DocumentCreationDialog} from './DocumentCreationDialog';
 import {Icon} from './Icon';
 import {PageEditor} from './PageEditor';
 import {WorkspacePicker} from './WorkspacePicker';
+import {PageCoverArt} from './editor/CoverGallery';
 import type {SectionTreeModel, Space, WorkspaceModel, WorkspacePageModel} from './model';
 import {newPagePath, newSectionPath, pagePath, sectionPath, spacePath, spacesPath, withOptions} from './routes';
 
@@ -33,6 +34,7 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
   const spaceHref = withOptions(spacePath(tenant.id, space.id), options);
   const createSectionHref = newSectionPath(tenant.id, space.id, options, selected?.id);
   const currentPages = pages.filter(page => page.sectionId === selected?.id);
+  const publishedCover = editor ? null : reading?.cover;
   const sectionHref = (id: string) => withOptions(sectionPath(tenant.id, space.id, id), options);
   const pageHref = (id: string) => withOptions(pagePath(tenant.id, space.id, id), options);
   const emptyMessage = selected ? 'Этот раздел пока пуст' :
@@ -94,7 +96,8 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
           ) : <span>{space.name}</span>}
         </nav>
         <article className="documents-article">
-          <header className="space-heading">
+          <header className={`space-heading${publishedCover && publishedCover.value !== 'none' ? ' page-cover-heading' : ''}`}>
+            <PageCoverArt cover={publishedCover} />
             <span className="space-icon"><Icon name={selectedPage ? 'file' : 'folder'} /></span>
             <div>
               <h1>{selectedPage?.title ?? selected?.title ?? space.name}</h1>

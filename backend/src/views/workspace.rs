@@ -431,13 +431,21 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
             )
         }
     };
+    let cover = tree.reading.as_ref().map_or_else(String::new, |reading| {
+        super::editor::cover_art(&reading.cover)
+    });
+    let cover_class = if cover.is_empty() {
+        ""
+    } else {
+        " page-cover-heading"
+    };
     let content = format!(
         r#"
     {sidebar}
     <div class="documents-content">
       <nav class="documents-path" aria-label="Путь"><a href="{catalog_href}">Пространства</a>{next}{crumb}</nav>
       <article class="documents-article">
-        <header class="space-heading"><span class="space-icon">{document_icon}</span>
+        <header class="space-heading{cover_class}">{cover}<span class="space-icon">{document_icon}</span>
           <div><h1>{title}</h1><div class="space-badges"><span>{lock}Закрытое</span><span>{access}</span></div></div>
         </header>
         {contents}

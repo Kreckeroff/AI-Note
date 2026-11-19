@@ -7,6 +7,8 @@ const paths = {
   layers: 'm3 8 9-5 9 5-9 5-9-5zm0 5 9 5 9-5m-18 5 9 5 9-5',
   back: 'M20 12H5m6 6-6-6 6-6',
   close: 'm6 6 12 12M6 18 18 6',
+  upload: 'M12 16V3M7 8l5-5 5 5M4 16v4h16v-4',
+  edit: 'm4 15 11-11 5 5L9 20H4v-5zm9-9 5 5',
   home: 'm3 10 9-7 9 7v10H3zm6 10v-6h6v6',
   down: 'm6 9 6 6 6-6',
   next: 'm9 6 6 6-6 6',

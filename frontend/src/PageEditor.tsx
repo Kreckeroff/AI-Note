@@ -1,11 +1,13 @@
 import {useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
 import {flushSync} from 'react-dom';
 import {Icon} from './Icon';
+import {coverLabel, CoverConflictOptions, CoverGallery, PageCoverArt} from './editor/CoverGallery';
 import {DraftDialogs, type DialogValue} from './editor/DraftDialogs';
 import {createDraftHistory, type DraftEditKind, type DraftFrame, type DraftHistoryDirection} from './editor/draftHistory';
 import {applyLink, pasteMarkdown, type EditorChange} from './editor/editorChanges';
 import {ListStyleMenu} from './editor/ListStyleMenu';
 import type {SourceRange} from './editor/markdownModel';
+import {chooseCoverDraft, resolveCoverDraft, type CoverChoice, type CoverDraft, type CoverView} from './editor/pageCover';
 import {
   applySourceCommand, decodeLegacyText, RichMarkdownEditor,
   type EditorCommand, type RichMarkdownEditorHandle,
@@ -48,6 +50,14 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const [saving, setSaving] = useState(false);
   const [clientError, setClientError] = useState('');
   const [rebase, setRebase] = useState(false);
+  const [coverDraft, setCoverDraft] = useState<CoverDraft>(() => ({
+    cover: form.cover ?? null,
+    base: form.coverBase ?? (form.coverChanged ? null : form.cover?.value ?? null),
+    changed: form.coverChanged ?? false,
+  }));
+  const [coverChoice, setCoverChoice] = useState<CoverChoice | null>(null);
+  const [coverOpen, setCoverOpen] = useState(false);
+  const coverButton = useRef<HTMLButtonElement>(null);
   const [dialog, setDialog] = useState<DialogRequest>();
   const [history] = useState(createDraftHistory);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -60,6 +70,11 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const visibleError = clientError || error;
   const describedBy = visibleError ? 'page-editor-error' : undefined;
   const readOnly = !canSave || saving;
+  const cover = resolveCoverDraft(coverDraft, conflict?.cover, coverChoice, rebase);
+  const hasCover = Boolean(cover.preview && cover.preview.value !== 'none');
+  const showCover = hasCover || canSave && (form.cover !== undefined || form.coverUploadTo != null);
+  const coverConflictPending = cover.requiresChoice && coverChoice === null;
+  const textStillUnchanged = form.textBase && form.textUnchanged && draft.source === form.source && draft.contentFormat === form.contentFormat;
 
   function restoreSelection(range?: SourceRange) {
     if (sourceMode) {
@@ -176,8 +191,19 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     return true;
   }
 
+  function chooseCover(selected: CoverView) {
+    if (!conflict?.cover && selected.value === (cover.preview?.value ?? 'none')) return;
+    setCoverDraft(chooseCoverDraft(coverDraft, selected, conflict?.cover));
+    setCoverChoice(null);
+  }
+
+  function closeCover() {
+    setCoverOpen(false);
+    coverButton.current?.focus({preventScroll: true});
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
-    if (!canSave || submitting.current || (conflict && !rebase)) {
+    if (!canSave || submitting.current || conflict && (!rebase || coverConflictPending)) {
       event.preventDefault();
       return;
     }
@@ -217,7 +243,20 @@ export function PageEditor({form}: {form: PageEditorForm}) {
       <input type="hidden" name="text" value={draft.source} />
       <input type="hidden" name="contentFormat" value={draft.contentFormat} />
       <input type="hidden" name="editorMode" value={editorMode} />
+      {form.textBase && <input type="hidden" name="textBase" value={form.textBase} />}
+      {cover.base !== null && <input type="hidden" name="coverBase" value={cover.base} />}
+      {cover.cover !== null && <input type="hidden" name="cover" value={cover.cover} />}
       {visibleError && <p className="form-error" id="page-editor-error" role="alert">{visibleError}</p>}
+      {showCover && <div className={`page-cover-slot${hasCover ? ' page-cover-slot-filled' : ''}`}>
+        {hasCover && <div className="page-cover-preview">
+          <PageCoverArt cover={cover.preview} />
+          <span className="page-cover-caption">{coverLabel(cover.preview)}</span>
+        </div>}
+        {canSave && <button ref={coverButton} className="space-action space-secondary page-cover-change" type="button"
+          aria-haspopup="dialog" disabled={saving} onClick={() => setCoverOpen(true)}>
+          <Icon name={hasCover ? 'edit' : 'add'} />{hasCover ? 'Изменить обложку' : 'Добавить обложку'}
+        </button>}
+      </div>}
       <div className="page-editor-toolbar" role="toolbar" aria-label="Форматирование Markdown"
         onKeyDown={moveToolbarFocus} onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}>
         {tools.map(({command, label}) => {
@@ -290,9 +329,19 @@ export function PageEditor({form}: {form: PageEditorForm}) {
             <div className="page-editor-current-text" tabIndex={0} aria-labelledby="page-editor-current-heading">
               {conflict.text || 'Пока здесь ничего нет.'}
             </div>
+            {!cover.requiresChoice && conflict.cover && <div className="page-cover-current">
+              <h3>Опубликованная обложка</h3>
+              {conflict.cover.value !== 'none' && <div className="page-cover-conflict-preview">
+                <PageCoverArt cover={conflict.cover} />
+              </div>}
+              <p>{coverLabel(conflict.cover)}</p>
+            </div>}
           </section>
         )}
       </div>
+      {cover.requiresChoice && conflict?.cover && <CoverConflictOptions draft={coverDraft.cover} published={conflict.cover}
+        choice={coverChoice} disabled={readOnly} onChoice={setCoverChoice} />}
+      {conflict && textStillUnchanged && <p className="space-hint">Текст в черновике не менялся. После сохранения останется актуальный текст.</p>}
       {conflict && canSave && (
         <label className="page-editor-rebase">
           <input type="checkbox" name="baseRevision" value={conflict.revision} checked={rebase}
@@ -310,12 +359,13 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           </a>
         )}
         {canSave && (
-          <button className="space-action primary-action" type="submit" disabled={saving || Boolean(conflict && !rebase)}>
+          <button className="space-action primary-action" type="submit" disabled={saving || Boolean(conflict && (!rebase || coverConflictPending))}>
             Сохранить
           </button>
         )}
       </div>
     </form>
+    {coverOpen && <CoverGallery cover={cover.preview} uploadTo={form.coverUploadTo} onPick={chooseCover} onDismiss={closeCover} />}
     {dialog && <DraftDialogs request={dialog} onApply={applyDialog} onCancel={() => {
       const range = dialog.range;
       closeDialog(dialog.kind === 'paste' ? {start: range.end, end: range.end} : range);
