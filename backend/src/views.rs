@@ -17,24 +17,10 @@ pub(crate) use workspace::{
 
 use std::borrow::Cow;
 
+use crate::text::escape_html as html;
 use client::ClientPage;
 
 const NORTH_ICON: &str = r#"<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.8 7.2L22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8L12 2z M12 9v6m-3-3h6"/></svg>"#;
-
-fn html(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
 
 fn icon(name: &str) -> String {
     let path = match name {

@@ -1,0 +1,41 @@
+[
+  {
+    "name": "mixed list, tasks, and literal markup",
+    "source": "7) Первый\n   - [x] Готово\n   - [ ] Позже\n     3. **Шаг**\n1) Потом\n\nДо ~~_правки_~~ <b>без HTML</b>.\n\n---\n\nКонец",
+    "html": "<ol start=\"7\"><li>Первый<ul><li class=\"markdown-task\"><input type=\"checkbox\" disabled checked aria-labelledby=\"markdown-task-1\"> <span id=\"markdown-task-1\">Готово</span></li><li class=\"markdown-task\"><input type=\"checkbox\" disabled aria-labelledby=\"markdown-task-2\"> <span id=\"markdown-task-2\">Позже</span><ol start=\"3\"><li><strong>Шаг</strong></li></ol></li></ul></li><li>Потом</li></ol><p>До <del><em>правки</em></del> &lt;b&gt;без HTML&lt;/b&gt;.</p><hr><p>Конец</p>",
+    "kinds": ["ordered", "bullet", "bullet", "ordered", "ordered", "paragraph", "rule", "paragraph"]
+  },
+  {
+    "name": "table with escaped separator and checked HTTP link",
+    "source": "| Условие | Итог |\n| --- | :---: |\n| A \\| B | [официальный **источник**](https://example.test/about?q=1&v=2) |\n| | |\n\n~~~sh\n---  \n\tне менять\n~~~",
+    "html": "<div class=\"markdown-table-scroll\"><table><thead><tr><th scope=\"col\">Условие</th><th scope=\"col\" class=\"markdown-cell-center\">Итог</th></tr></thead><tbody><tr><td>A | B</td><td class=\"markdown-cell-center\"><a href=\"https://example.test/about?q=1&amp;v=2\" target=\"_blank\" rel=\"noopener noreferrer\">официальный <strong>источник</strong></a></td></tr><tr><td></td><td class=\"markdown-cell-center\"></td></tr></tbody></table></div><pre><code>---  \n\tне менять</code></pre>",
+    "kinds": ["table", "fence"]
+  },
+  {
+    "name": "unsupported shape stays literal",
+    "source": "| А | Б |\n| --- | --- |\n| Без столбца |\n\n[локальная](/page) ![подпись](https://example.test/icon) `~~буквально~~`",
+    "html": "<pre>| А | Б |\n| --- | --- |\n| Без столбца |</pre><p>[локальная](/page) ![подпись](https://example.test/icon) <code>~~буквально~~</code></p>",
+    "kinds": ["protected", "paragraph"]
+  },
+  {
+    "name": "strikethrough uses the same Unicode whitespace in both views",
+    "source": "~~\ufeffтекст~~\n~~\u0085текст~~",
+    "html": "<p>~~\ufeffтекст~~</p><p><del>\u0085текст</del></p>",
+    "kinds": ["paragraph", "paragraph"],
+    "runs": [["~~\ufeffтекст~~", []], ["\u0085текст", ["strike"]]]
+  },
+  {
+    "name": "Markdown escapes leave HTTP path and query punctuation unchanged",
+    "source": "[Ссылка](https://example.test/a\\(b\\)?t=\\(x\\)\\|z)",
+    "html": "<p><a href=\"https://example.test/a(b)?t=(x)|z\" target=\"_blank\" rel=\"noopener noreferrer\">Ссылка</a></p>",
+    "kinds": ["paragraph"],
+    "href": "https://example.test/a(b)?t=(x)|z"
+  },
+  {
+    "name": "Unicode separators in a fence's info are not source line breaks",
+    "source": "~~~имя\u2028языка\nкод\n~~~\u2029\nОбычный текст",
+    "html": "<pre><code>код</code></pre><p>Обычный текст</p>",
+    "kinds": ["fence", "paragraph"],
+    "runs": [["код", []], ["Обычный текст", []]]
+  }
+]

@@ -552,27 +552,50 @@ mod tests {
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
-        let send = |token: &str, uri: &str, form: Option<(&str, &str, Option<&str>)>| {
+        let send_encoded = |token: &str, uri: &str, form: Option<String>| {
             let mut request = Request::builder()
                 .uri(uri)
                 .header(header::HOST, &server.host)
                 .header(header::COOKIE, format!("sever_session={token}"));
-            let body = if let Some((text, revision, rebase)) = form {
+            let body = if let Some(form) = form {
                 request = request
                     .method(Method::POST)
                     .header(header::ORIGIN, &server.origin)
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
-                let mut form = url::form_urlencoded::Serializer::new(String::new());
-                form.append_pair("text", text)
-                    .append_pair("revision", revision);
-                if let Some(rebase) = rebase {
-                    form.append_pair("baseRevision", rebase);
-                }
-                Body::from(form.finish())
+                Body::from(form)
             } else {
                 Body::empty()
             };
             dispatch(State(server.clone()), request.body(body).unwrap())
+        };
+        let send = |token: &str, uri: &str, form: Option<(&str, &str, Option<&str>)>| {
+            send_encoded(
+                token,
+                uri,
+                form.map(|(text, revision, rebase)| {
+                    let mut form = url::form_urlencoded::Serializer::new(String::new());
+                    form.append_pair("text", text)
+                        .append_pair("revision", revision);
+                    if let Some(rebase) = rebase {
+                        form.append_pair("baseRevision", rebase);
+                    }
+                    form.finish()
+                }),
+            )
+        };
+        let send_source = |token: &str, uri: &str, source: &str, revision: &str, format: &str| {
+            send_encoded(
+                token,
+                uri,
+                Some(
+                    url::form_urlencoded::Serializer::new(String::new())
+                        .append_pair("text", source)
+                        .append_pair("revision", revision)
+                        .append_pair("contentFormat", format)
+                        .append_pair("editorMode", "source")
+                        .finish(),
+                ),
+            )
         };
         let page = pages[0];
         let path = format!("/workspace/{tenant}/spaces/{space}/pages/{page}");
@@ -592,6 +615,9 @@ mod tests {
             assert!(script < bundle);
         }
         assert!(body.contains("name=\"revision\" value=\"1\""));
+        assert!(body.contains(r#"name="contentFormat" value="literal""#));
+        assert!(body.contains(r#"name="editorMode" value="visual""#));
+        assert!(body.contains("data-native-source"));
         assert!(body.contains("autofocus>\n</textarea>"));
         let read_only = send(editor_token, &edit_to, None).await;
         assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
@@ -638,8 +664,8 @@ mod tests {
         let conflict = send(owner_token, &edit_to, Some((draft, "1", None))).await;
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
         let body = response_text(conflict).await?;
-        assert!(body.contains(escaped));
-        assert!(body.contains("Мой &lt;черновик&gt;"));
+        assert!(body.contains(r"\# Абзац"));
+        assert!(body.contains(r"Мой \&lt;черновик\&gt;"));
         assert!(body.contains("name=\"baseRevision\" value=\"2\""));
         let rebased = send(owner_token, &edit_to, Some((draft, "1", Some("2")))).await;
         assert_eq!(rebased.status(), StatusCode::SEE_OTHER);
@@ -676,7 +702,7 @@ mod tests {
         let forbidden = send(editor_token, &edit_to, Some((draft, "4", None))).await;
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
         let body = response_text(forbidden).await?;
-        assert!(body.contains("Мой &lt;черновик&gt;"));
+        assert!(body.contains(r"Мой \&lt;черновик\&gt;"));
         assert!(body.contains("autofocus readonly"));
         assert!(!body.contains("/page-editor.js"));
         assert!(!body.contains(&limit));
@@ -695,6 +721,71 @@ mod tests {
         assert!(!denied.contains("Рабочая страница"));
         assert!(!denied.contains("черновик"));
         assert_eq!(denied, response_text(missing).await?);
+
+        // The same source at a stale revision remains a no-op even when switching formats.
+        let unchanged = crate::text::text_to_markdown("другой секрет");
+        let unchanged_post = send_source(owner_token, &other_to, &unchanged, "7", "markdown").await;
+        assert_eq!(unchanged_post.status(), StatusCode::SEE_OTHER);
+        let stored = || {
+            sqlx::query_as::<_, (i64, String, bool)>(
+                "SELECT content_revision, markdown, content_is_markdown FROM pages
+             WHERE tenant_id = $1 AND space_id = $2 AND id = $3",
+            )
+            .bind(tenant)
+            .bind(space)
+            .bind(pages[1])
+            .fetch_one(&pool)
+        };
+        assert_eq!(stored().await?, (8, unchanged, false));
+
+        let source = "\r\n## Заголовок\r\n\r\nДо **слово** и _термин_.\r\n\r\n- Первый\r\n- Второй\r\n\r\n`**x**`\r\n\r\n<img src=https://example.test/asset>  \r\n";
+        let saved = send_source(owner_token, &other_to, source, "8", "markdown").await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        let expected_source = source.replace("\r\n", "\n");
+        assert_eq!(stored().await?, (9, expected_source.clone(), true));
+        let repeated = send_source(owner_token, &other_to, source, "8", "markdown").await;
+        assert_eq!(repeated.status(), StatusCode::SEE_OTHER);
+        assert_eq!(stored().await?, (9, expected_source.clone(), true));
+
+        let other_read = format!("/workspace/{tenant}/spaces/{space}/pages/{}", pages[1]);
+        let body = response_text(send(owner_token, &other_read, None).await).await?;
+        assert!(body.contains(r#"class="document-text document-markdown"><h3>Заголовок</h3>"#));
+        assert!(body.contains("<strong>слово</strong> и <em>термин</em>"));
+        assert!(body.contains("<ul><li>Первый</li><li>Второй</li></ul>"));
+        assert!(body.contains("<code>**x**</code>"));
+        assert!(body.contains("&lt;img src=https://example.test/asset&gt;"));
+        assert!(!body.contains("<img src="));
+
+        let whitespace_edit = format!("{expected_source} ");
+        let conflict = send_source(owner_token, &other_to, &whitespace_edit, "8", "markdown").await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let body = response_text(conflict).await?;
+        assert!(body.contains("name=\"baseRevision\" value=\"9\""));
+        assert!(body.contains("name=\"contentFormat\" value=\"markdown\""));
+        assert!(body.contains("name=\"editorMode\" value=\"source\""));
+        assert!(body.contains("&gt;  \n </textarea>"));
+
+        let source_limit = "🙂".repeat(60_000);
+        let excessive = format!("{source_limit}🙂");
+        let invalid = send_source(owner_token, &other_to, &excessive, "9", "markdown").await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response_text(invalid).await?;
+        assert!(body.contains("Исходник не должен превышать 60 000 символов."));
+        assert!(body.contains(&excessive));
+        let saved = send_source(owner_token, &other_to, &source_limit, "9", "markdown").await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(stored().await?, (10, source_limit, true));
+
+        let literal_limit = r"\*".repeat(30_000);
+        let saved = send_source(owner_token, &edit_to, &literal_limit, "4", "literal").await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        let edited = response_text(send(owner_token, &edit_to, None).await).await?;
+        assert!(edited.contains(&literal_limit));
+        let read = response_text(send(owner_token, &read_to, None).await).await?;
+        assert!(read.contains(&format!(
+            r#"<div class="document-text">{}</div>"#,
+            "*".repeat(30_000)
+        )));
         Ok(())
     }
 
@@ -749,11 +840,16 @@ mod tests {
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
-        let request = |origin: &str| {
-            let form = url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("text", "\nЧерновик <текста>\n\nПовтор")
-                .append_pair("revision", "8")
-                .finish();
+        let request = |origin: &str, source: Option<(&str, &str, &str)>| {
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("revision", "8");
+            if let Some((source, format, mode)) = source {
+                form.append_pair("text", source)
+                    .append_pair("contentFormat", format)
+                    .append_pair("editorMode", mode);
+            } else {
+                form.append_pair("text", "\nЧерновик <текста>\n\nПовтор");
+            }
             Request::builder()
                 .uri(format!("{PATH}?scope=mine"))
                 .method(Method::POST)
@@ -761,20 +857,51 @@ mod tests {
                 .header(header::ORIGIN, origin)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
-                .body(Body::from(form))
+                .body(Body::from(form.finish()))
                 .unwrap()
         };
-        let response = dispatch(State(server.clone()), request(&server.origin)).await;
+        let response = dispatch(State(server.clone()), request(&server.origin, None)).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         let body = std::str::from_utf8(&body).unwrap();
-        assert!(body.contains("Черновик &lt;текста&gt;\n\nПовтор"));
+        assert!(body.contains("Черновик \\&lt;текста\\&gt;\n\nПовтор"));
         assert!(body.contains(r#"name="revision" value="8""#));
+        assert!(body.contains(r#"name="contentFormat" value="literal""#));
+        assert!(body.contains(r#"name="editorMode" value="visual""#));
+        assert!(!body.contains("data-native-source"));
         assert!(body.contains(&format!(r#"action="{PATH}?scope=mine""#)));
         assert!(!body.contains("Дерево пространства"));
 
-        let foreign = dispatch(State(server.clone()), request("http://foreign.test")).await;
+        let markdown = "\n## Точный исходник\n\n**Черновик**  \n";
+        let retry = dispatch(
+            State(server.clone()),
+            request(&server.origin, Some((markdown, "markdown", "source"))),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(retry.into_body(), 64 * 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains(markdown));
+        assert!(body.contains(r#"name="revision" value="8""#));
+        assert!(body.contains(r#"name="contentFormat" value="markdown""#));
+        assert!(body.contains(r#"name="editorMode" value="source""#));
+
+        let literal = "\n## Прежний буквальный текст\n\n**Черновик**  \n";
+        let retry = dispatch(
+            State(server.clone()),
+            request(&server.origin, Some((literal, "literal", "visual"))),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(retry.into_body(), 64 * 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains(literal));
+        assert!(body.contains(r#"name="contentFormat" value="literal""#));
+        assert!(body.contains(r#"name="editorMode" value="visual""#));
+        assert!(!body.contains("data-native-source"));
+
+        let foreign = dispatch(State(server.clone()), request("http://foreign.test", None)).await;
         assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
         let body = to_bytes(foreign.into_body(), 4096).await.unwrap();
         assert!(!std::str::from_utf8(&body).unwrap().contains("Черновик"));

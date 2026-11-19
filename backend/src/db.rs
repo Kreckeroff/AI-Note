@@ -4,7 +4,7 @@ mod page_text;
 mod pages;
 mod sections;
 
-pub(crate) use page_text::{PageAddress, PageText, SavePageText};
+pub(crate) use page_text::{PageAddress, PageContentFormat, PageText, PageUpdate, SavePageText};
 pub(crate) use pages::{CreatePage, CreatePageInput, Page};
 pub(crate) use sections::{CreateSection, Section, SectionTree};
 

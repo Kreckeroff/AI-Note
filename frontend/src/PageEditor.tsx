@@ -1,16 +1,82 @@
-import {useEffect, useRef, useState, type FormEvent} from 'react';
+import {useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
+import {flushSync} from 'react-dom';
+import {Icon} from './Icon';
+import {DraftDialogs, type DialogValue} from './editor/DraftDialogs';
+import {createDraftHistory, type DraftEditKind, type DraftFrame, type DraftHistoryDirection} from './editor/draftHistory';
+import {applyLink, pasteMarkdown, type EditorChange} from './editor/editorChanges';
+import {ListStyleMenu} from './editor/ListStyleMenu';
+import type {SourceRange} from './editor/markdownModel';
+import {
+  applySourceCommand, decodeLegacyText, RichMarkdownEditor,
+  type EditorCommand, type RichMarkdownEditorHandle,
+} from './editor/RichMarkdownEditor';
 import type {PageEditorForm} from './model';
 
-const maxTextLength = 30_000;
+const maxLiteralLength = 30_000;
+const maxSourceLength = 60_000;
+const tools = [
+  {command: 'heading', label: 'Заголовок'},
+  {command: 'bold', label: 'Жирный'},
+  {command: 'italic', label: 'Курсив'},
+  {command: 'strike', label: 'Зачеркнуть'},
+  {command: 'list', label: 'Список'},
+  {command: 'code', label: 'Код'},
+] as const;
+
+type DialogRequest = ({kind: 'link'; label: string} | {kind: 'paste'}) & {range: SourceRange};
+
+function moveToolbarFocus(event: KeyboardEvent<HTMLDivElement>) {
+  const direction = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1};
+  if (event.defaultPrevented || !(event.target instanceof HTMLButtonElement) || !event.target.hasAttribute('data-markdown-tool')) return;
+  if (!(event.key in direction) && event.key !== 'Home' && event.key !== 'End') return;
+
+  const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-markdown-tool]:enabled')];
+  if (!buttons.length) return;
+  const current = buttons.indexOf(event.target as HTMLButtonElement);
+  const offset = direction[event.key as keyof typeof direction];
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 :
+    (current + offset + buttons.length) % buttons.length;
+  event.preventDefault();
+  buttons[next]?.focus();
+}
 
 export function PageEditor({form}: {form: PageEditorForm}) {
-  const {action, cancelTo, text, revision, error, conflict, canSave} = form;
-  const input = useRef<HTMLTextAreaElement>(null);
-  const submitting = useRef(false);
+  const {action, cancelTo, revision, error, conflict, canSave} = form;
+  const [draft, setDraft] = useState({source: form.source, contentFormat: form.contentFormat});
+  const [editorMode, setEditorMode] = useState(form.editorMode);
+  const [activeTool, setActiveTool] = useState<EditorCommand | 'source' | 'list-options' | 'link'>('heading');
   const [saving, setSaving] = useState(false);
   const [clientError, setClientError] = useState('');
   const [rebase, setRebase] = useState(false);
+  const [dialog, setDialog] = useState<DialogRequest>();
+  const [history] = useState(createDraftHistory);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const rich = useRef<RichMarkdownEditorHandle>(null);
+  const focusRange = useRef<SourceRange | undefined>(undefined);
+  const rawBeforeInput = useRef<SourceRange | undefined>(undefined);
+  const composing = useRef<DraftFrame | undefined>(undefined);
+  const submitting = useRef(false);
+  const sourceMode = editorMode === 'source';
   const visibleError = clientError || error;
+  const describedBy = visibleError ? 'page-editor-error' : undefined;
+  const readOnly = !canSave || saving;
+
+  function restoreSelection(range?: SourceRange) {
+    if (sourceMode) {
+      const field = input.current;
+      field?.focus({preventScroll: true});
+      if (range) field?.setSelectionRange(range.start, range.end);
+    } else if (range) rich.current?.restoreSelection(range);
+    else rich.current?.focus();
+  }
+
+  useLayoutEffect(() => {
+    if (dialog || !focusRange.current) return;
+    restoreSelection(focusRange.current);
+    focusRange.current = undefined;
+  }, [dialog, sourceMode]);
+
+  useLayoutEffect(() => { restoreSelection(); }, []);
 
   useEffect(() => {
     function restoreFromHistory(event: PageTransitionEvent) {
@@ -22,33 +88,201 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     return () => window.removeEventListener('pageshow', restoreFromHistory);
   }, []);
 
+  function record(next: typeof draft, before: SourceRange, after: SourceRange, kind: DraftEditKind, previous = draft) {
+    if (!canSave || submitting.current) return;
+    history.record({...previous, selection: before}, {...next, selection: after}, kind);
+    setDraft(next);
+    setClientError('');
+  }
+
+  function applyEdit(change: EditorChange, before: SourceRange, kind: DraftEditKind = 'atomic') {
+    record({source: change.source, contentFormat: change.legacy ? 'literal' : 'markdown'}, before,
+      {start: change.start, end: change.end}, kind);
+  }
+
+  function sourceDraft(source: string): typeof draft {
+    return source === draft.source ? draft : {source, contentFormat: source === form.source ? form.contentFormat : 'markdown'};
+  }
+
+  function selection(): SourceRange {
+    const field = input.current;
+    return field ? {start: field.selectionStart, end: field.selectionEnd} : rich.current?.selection() ?? {start: 0, end: 0};
+  }
+
+  function stepHistory(direction: DraftHistoryDirection) {
+    if (!canSave || submitting.current || composing.current) return;
+    const frame = history.step(direction);
+    if (!frame) return;
+    flushSync(() => {
+      setDraft({source: frame.source, contentFormat: frame.contentFormat});
+      setClientError('');
+    });
+    restoreSelection(frame.selection);
+  }
+
+  useLayoutEffect(() => {
+    const field = input.current;
+    if (!field) return;
+    function rememberSource(event: InputEvent) {
+      if (event.cancelable && (event.inputType === 'historyUndo' || event.inputType === 'historyRedo')) {
+        event.preventDefault();
+        stepHistory(event.inputType === 'historyUndo' ? 'undo' : 'redo');
+      } else rawBeforeInput.current = selection();
+    }
+    field.addEventListener('beforeinput', rememberSource);
+    return () => field.removeEventListener('beforeinput', rememberSource);
+  });
+
+  function apply(command: EditorCommand) {
+    if (!canSave || submitting.current) return;
+    if (!sourceMode) {
+      rich.current?.apply(command);
+      return;
+    }
+    const field = input.current;
+    if (!field) return;
+    const before = selection();
+    const change = applySourceCommand(field.value, before.start, before.end, command);
+    flushSync(() => record(sourceDraft(change.source), before, {start: change.start, end: change.end}, 'atomic'));
+    restoreSelection(change);
+  }
+
+  function openLink() {
+    const range = selection();
+    const label = sourceMode ? draft.source.slice(range.start, range.end) : rich.current?.selectedText() || '';
+    if (!canSave || submitting.current || !label.trim() || range.start === range.end) {
+      restoreSelection(range);
+      return;
+    }
+    history.separate();
+    setDialog({kind: 'link', range, label});
+  }
+
+  function closeDialog(range: SourceRange) {
+    focusRange.current = range;
+    setDialog(undefined);
+  }
+
+  function applyDialog(value: DialogValue) {
+    if (!dialog || submitting.current || !canSave) return false;
+    const {source, contentFormat} = draft;
+    const legacy = contentFormat === 'literal';
+    const range = dialog.range;
+    const change = value.kind === 'link' ? applyLink(source, legacy, range, value.label, value.address)
+      : pasteMarkdown(source, legacy, range, value.text);
+    if (change.source === source && change.legacy === legacy) return false;
+    applyEdit(change, dialog.kind === 'paste' ? {start: range.end, end: range.end} : range, 'atomic');
+    closeDialog({start: change.start, end: change.end});
+    return true;
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     if (!canSave || submitting.current || (conflict && !rebase)) {
       event.preventDefault();
       return;
     }
-    const value = input.current?.value ?? '';
-    if (Array.from(value).length > maxTextLength) {
+    let limitError = '';
+    if (Array.from(draft.source).length > maxSourceLength) {
+      limitError = 'Введите не больше 60 000 символов исходника.';
+    } else if (draft.contentFormat === 'literal' && Array.from(decodeLegacyText(draft.source)).length > maxLiteralLength) {
+      limitError = 'Введите не больше 30 000 символов.';
+    }
+    if (limitError) {
       event.preventDefault();
-      setClientError('Введите не больше 30 000 символов.');
-      input.current?.focus();
+      setClientError(limitError);
+      if (sourceMode) input.current?.focus();
+      else rich.current?.focus();
       return;
     }
     submitting.current = true;
     setSaving(true);
   }
 
-  return (
-    <form className="page-editor" method="post" action={action} onSubmit={onSubmit}>
+  function handleShortcut(event: KeyboardEvent<HTMLFormElement>) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.nativeEvent.isComposing) return;
+    const key = event.key.toLowerCase();
+    if (!event.shiftKey && key === 's') {
+      event.preventDefault();
+      if (canSave) event.currentTarget.requestSubmit();
+    } else if (event.target instanceof HTMLElement && event.target.closest('#page-text') &&
+        (key === 'z' || key === 'y' && event.ctrlKey && !event.metaKey && !event.shiftKey)) {
+      event.preventDefault();
+      stepHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo');
+    }
+  }
+
+  return <>
+    <form className="page-editor" method="post" action={action} onSubmit={onSubmit} onKeyDown={handleShortcut}>
       <input type="hidden" name="revision" value={revision} />
+      <input type="hidden" name="text" value={draft.source} />
+      <input type="hidden" name="contentFormat" value={draft.contentFormat} />
+      <input type="hidden" name="editorMode" value={editorMode} />
       {visibleError && <p className="form-error" id="page-editor-error" role="alert">{visibleError}</p>}
+      <div className="page-editor-toolbar" role="toolbar" aria-label="Форматирование Markdown"
+        onKeyDown={moveToolbarFocus} onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}>
+        {tools.map(({command, label}) => {
+          const tool = <button data-markdown-tool="" key={command} type="button" disabled={readOnly}
+            tabIndex={canSave && activeTool === command ? 0 : -1}
+            onFocus={() => setActiveTool(command)} onClick={() => apply(command)}>
+            {command === 'list' && <Icon name="list" />}{label}
+          </button>;
+          return command === 'list' ? <div key={command} className="page-list-group">
+            {tool}
+            <ListStyleMenu disabled={readOnly} active={activeTool === 'list-options'}
+              onFocus={() => setActiveTool('list-options')} onApply={apply} />
+          </div> : tool;
+        })}
+        <button data-markdown-tool="" type="button" disabled={readOnly} tabIndex={activeTool === 'link' ? 0 : -1}
+          onFocus={() => setActiveTool('link')} onClick={openLink}>Ссылка</button>
+        <button data-markdown-tool="" className="page-source-toggle" type="button" aria-pressed={sourceMode} aria-controls="page-text"
+          tabIndex={!canSave || activeTool === 'source' ? 0 : -1} disabled={saving}
+          onFocus={() => setActiveTool('source')}
+          onClick={() => {
+            if (submitting.current) return;
+            focusRange.current = selection();
+            history.separate();
+            rawBeforeInput.current = undefined;
+            setEditorMode(sourceMode ? 'visual' : 'source');
+          }}>
+          <Icon name="code" />Исходник
+        </button>
+      </div>
       <div className={conflict ? 'page-editor-columns page-editor-columns-conflict' : 'page-editor-columns'}>
-        <div className="page-editor-field">
-          <label htmlFor="page-text">Текст страницы</label>
-          <textarea id="page-text" name="text" rows={12} ref={input} defaultValue={text} autoFocus
-            readOnly={!canSave || saving} aria-invalid={Boolean(clientError) || undefined}
-            aria-describedby={visibleError ? 'page-editor-error' : undefined}
-            onInput={() => setClientError('')} />
+        <div className={sourceMode ? 'page-editor-field' : 'page-rich-field'}>
+          {sourceMode ? (
+            <>
+              <label className="page-editor-label" htmlFor="page-text">Исходный Markdown</label>
+              <textarea className="page-source-field" id="page-text" rows={12} ref={input} value={draft.source}
+                readOnly={readOnly} spellCheck={false} aria-invalid={Boolean(clientError) || undefined}
+                aria-describedby={describedBy}
+                onCompositionStart={() => { composing.current = {...draft, selection: selection()}; }}
+                onCompositionEnd={event => {
+                  const original = composing.current;
+                  composing.current = undefined;
+                  rawBeforeInput.current = undefined;
+                  if (original) record(sourceDraft(event.currentTarget.value), original.selection, selection(), 'atomic', original);
+                }}
+                onChange={event => {
+                  if (readOnly || submitting.current) return;
+                  const after = selection();
+                  const before = rawBeforeInput.current ?? after;
+                  rawBeforeInput.current = undefined;
+                  const next = sourceDraft(event.currentTarget.value);
+                  if (composing.current) setDraft(next);
+                  else {
+                    const native = event.nativeEvent as InputEvent;
+                    record(next, before, after, native.inputType === 'insertText' && !native.isComposing ? 'typing' : 'atomic');
+                  }
+                }} />
+            </>
+          ) : (
+            <RichMarkdownEditor ref={rich} id="page-text" source={draft.source} legacy={draft.contentFormat === 'literal'}
+              onChange={applyEdit} readOnly={readOnly} describedBy={describedBy} onHistory={stepHistory}
+              onPasteMarkdown={range => {
+                history.separate();
+                setDialog({kind: 'paste', range});
+              }} />
+          )}
         </div>
         {conflict && (
           <section className="page-editor-current" aria-labelledby="page-editor-current-heading">
@@ -82,5 +316,9 @@ export function PageEditor({form}: {form: PageEditorForm}) {
         )}
       </div>
     </form>
-  );
+    {dialog && <DraftDialogs request={dialog} onApply={applyDialog} onCancel={() => {
+      const range = dialog.range;
+      closeDialog(dialog.kind === 'paste' ? {start: range.end, end: range.end} : range);
+    }} />}
+  </>;
 }

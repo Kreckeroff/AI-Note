@@ -24,12 +24,23 @@
       return;
     }
     const field = form.elements.namedItem('text');
-    if (Array.from(field.value).length > 30_000) {
+    const format = form.elements.namedItem('contentFormat');
+    const mode = form.elements.namedItem('editorMode');
+    // A fresh native field edits Markdown. A retry must keep the format and mode already submitted.
+    const editsSource = form.hasAttribute('data-native-source') && field.value !== field.defaultValue;
+    const literal = !editsSource && format.value === 'literal';
+    const tooLong = Array.from(field.value).length > 60_000;
+    const literalText = literal ? field.value.replace(/\\([\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e])/g, '$1') : '';
+    if (tooLong || (literal && Array.from(literalText).length > 30_000)) {
       event.preventDefault();
-      field.setCustomValidity('Введите не больше 30 000 символов.');
+      field.setCustomValidity(tooLong ? 'Введите не больше 60 000 символов.' : 'Введите не больше 30 000 символов.');
       field.reportValidity();
       field.focus();
       return;
+    }
+    if (editsSource) {
+      format.value = 'markdown';
+      mode.value = 'source';
     }
     form.setAttribute(pending, '');
     updateActions(form);

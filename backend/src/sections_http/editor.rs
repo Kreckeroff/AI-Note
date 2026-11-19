@@ -7,17 +7,19 @@ use super::{
     not_found, record,
 };
 use crate::{
-    db::{PageAddress, PageText, Principal, SavePageText, Store},
+    db::{PageAddress, PageContentFormat, PageText, PageUpdate, Principal, SavePageText, Store},
     http::{self, Form, FormError, html, plain, redirect},
-    sections::{PageEditConflict, PageEditorForm, PageReading},
-    text::normalize_line_endings,
+    markdown::render_markdown,
+    sections::{PageEditConflict, PageEditorForm, PageEditorMode, PageReading},
+    text::{markdown_to_text, normalize_line_endings, text_to_markdown},
     views,
     workspace::{DocumentsRoute, DocumentsTarget, page_edit_path, page_path, with_options},
 };
 
 const MAX_TEXT_CHARS: usize = 30_000;
+const MAX_SOURCE_CHARS: usize = 60_000;
 // A four-byte code point can take 12 bytes in the submitted form.
-const MAX_FORM_BYTES: usize = 512 * 1024;
+const MAX_FORM_BYTES: usize = 1024 * 1024;
 const OPEN_FORM: &str = "Откройте редактор страницы в «Севере».";
 const DENIED: &str = "У вас нет права сохранять текст этой страницы.";
 const UNAVAILABLE: &str = "Не удалось сохранить текст. Попробуйте снова.";
@@ -25,6 +27,10 @@ const CONFLICT: &str = "Текст страницы изменился. Срав
 
 struct Submission {
     text: String,
+    source: String,
+    format: PageContentFormat,
+    editor_mode: PageEditorMode,
+    plain_post: bool,
     revision: String,
     version: Option<i64>,
     error: Option<&'static str>,
@@ -33,10 +39,32 @@ struct Submission {
 impl From<Form> for Submission {
     fn from(form: Form) -> Self {
         let submitted_text = form.field("text");
+        let submitted_format = form.field("contentFormat");
+        let submitted_mode = form.field("editorMode");
         let submitted_revision = form.field("revision");
         let explicit_base = form.field("baseRevision");
-        let text = submitted_text.unwrap_or_else(Some).unwrap_or_default();
-        let text = normalize_line_endings(text).into_owned();
+        let submitted = submitted_text.unwrap_or_else(Some).unwrap_or_default();
+        let submitted = normalize_line_endings(submitted);
+        let plain_post = matches!(submitted_format, Ok(None));
+        let (format, valid_format) = match submitted_format {
+            Ok(None | Some("literal")) => (PageContentFormat::Literal, true),
+            Ok(Some("markdown")) => (PageContentFormat::Markdown, true),
+            _ => (PageContentFormat::Literal, false),
+        };
+        let (editor_mode, valid_mode) = match submitted_mode {
+            Ok(None | Some("visual")) => (PageEditorMode::Visual, true),
+            Ok(Some("source")) => (PageEditorMode::Source, true),
+            _ => (PageEditorMode::Visual, false),
+        };
+        let (source, text) = if plain_post {
+            (text_to_markdown(&submitted), submitted.into_owned())
+        } else {
+            let text = match format {
+                PageContentFormat::Literal => markdown_to_text(&submitted),
+                PageContentFormat::Markdown => submitted.to_string(),
+            };
+            (submitted.into_owned(), text)
+        };
         let original_revision = submitted_revision.unwrap_or_else(Some).unwrap_or_default();
         let original_version = submitted_revision.ok().flatten().and_then(parse_revision);
         let (revision, version) = match explicit_base {
@@ -48,18 +76,60 @@ impl From<Form> for Submission {
         };
         let error = if version.is_none() {
             Some("Не удалось проверить версию. Скопируйте черновик и откройте редактор снова.")
-        } else if !matches!(submitted_text, Ok(Some(_))) || text.contains('\0') {
+        } else if !matches!(submitted_text, Ok(Some(_)))
+            || source.contains('\0')
+            || !valid_format
+            || !valid_mode
+        {
             Some("Не удалось прочитать текст страницы. Проверьте введённый текст.")
-        } else if text.chars().count() > MAX_TEXT_CHARS {
+        } else if !plain_post && source.chars().count() > MAX_SOURCE_CHARS {
+            Some("Исходник не должен превышать 60 000 символов.")
+        } else if format == PageContentFormat::Literal && text.chars().count() > MAX_TEXT_CHARS {
             Some("Текст не должен превышать 30 000 символов.")
         } else {
             None
         };
         Self {
             text,
+            source,
+            format,
+            editor_mode,
+            plain_post,
             revision: revision.to_owned(),
             version,
             error,
+        }
+    }
+}
+
+impl Submission {
+    fn update(&self) -> PageUpdate<'_> {
+        if self.plain_post {
+            PageUpdate::PlainText(&self.text)
+        } else {
+            PageUpdate::Source(&self.source, self.format)
+        }
+    }
+
+    fn editor_form(
+        self,
+        action: String,
+        cancel_to: Option<String>,
+        error: &'static str,
+        conflict: Option<PageEditConflict>,
+        can_save: bool,
+    ) -> PageEditorForm {
+        PageEditorForm {
+            action,
+            cancel_to,
+            text: self.text,
+            source: self.source,
+            content_format: self.format,
+            editor_mode: self.editor_mode,
+            revision: self.revision,
+            error: Some(error),
+            conflict,
+            can_save,
         }
     }
 }
@@ -158,18 +228,34 @@ pub(super) async fn open(
             record(principal.id, route, "forbidden");
             return Ok(plain(StatusCode::FORBIDDEN, DENIED));
         }
+        let source = normalize_line_endings(&current.source).into_owned();
+        let text = match current.format {
+            PageContentFormat::Literal => markdown_to_text(&source),
+            PageContentFormat::Markdown => source.clone(),
+        };
         selected.editor = Some(PageEditorForm {
             action: edit_to(nav, id),
             cancel_to: Some(return_to(nav, id)),
-            text: current.text,
+            text,
+            source,
+            content_format: current.format,
+            editor_mode: PageEditorMode::Visual,
             revision: current.content_revision.to_string(),
             error: None,
             conflict: None,
             can_save: true,
         });
     } else {
+        let (text, rendered_html) = match current.format {
+            PageContentFormat::Literal => (markdown_to_text(&current.source), None),
+            PageContentFormat::Markdown => {
+                let rendered = render_markdown(&current.source);
+                (current.source, Some(rendered))
+            }
+        };
         selected.reading = Some(PageReading {
-            text: current.text,
+            text,
+            rendered_html,
             edit_to: current.can_edit.then(|| edit_to(nav, id)),
         });
     }
@@ -210,7 +296,7 @@ pub(super) async fn submit(
         let address = address(nav, id, principal);
         match timeout(
             SAVE_TIMEOUT,
-            store.save_page_text(&address, revision, &input.text),
+            store.save_page_text(&address, revision, input.update()),
         )
         .await
         {
@@ -265,34 +351,25 @@ async fn render_failure(
             StatusCode::CONFLICT,
             CONFLICT,
             Some(PageEditConflict {
-                text: current.text,
+                text: normalize_line_endings(&current.source).into_owned(),
                 revision: current.content_revision.to_string(),
             }),
         ),
     };
-    selected.editor = Some(PageEditorForm {
-        action: edit_to(nav, id),
-        cancel_to: Some(return_to(nav, id)),
-        text: input.text,
-        revision: input.revision,
-        error: Some(error),
+    let can_save = status != StatusCode::FORBIDDEN && input.version.is_some();
+    selected.editor = Some(input.editor_form(
+        edit_to(nav, id),
+        Some(return_to(nav, id)),
+        error,
         conflict,
-        can_save: status != StatusCode::FORBIDDEN && input.version.is_some(),
-    });
+        can_save,
+    ));
     record(principal.id, route, status.as_str());
     page.render(status, selected, None)
 }
 
 fn retry(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
-    let form = PageEditorForm {
-        action: edit_to(nav, id),
-        cancel_to: None,
-        text: input.text,
-        revision: input.revision,
-        error: Some(UNAVAILABLE),
-        conflict: None,
-        can_save: true,
-    };
+    let form = input.editor_form(edit_to(nav, id), None, UNAVAILABLE, None, true);
     html(
         StatusCode::SERVICE_UNAVAILABLE,
         views::page_edit_retry(&form),

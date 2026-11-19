@@ -2,6 +2,7 @@ mod admin;
 mod db;
 mod http;
 mod identity;
+mod markdown;
 mod registration;
 mod sections;
 mod sections_http;

@@ -1,7 +1,8 @@
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::db::{Page, Section};
+use crate::db::{Page, PageContentFormat, Section};
+use crate::markdown::RenderedMarkdown;
 
 pub(crate) struct SectionScreen {
     pub sections: Vec<Section>,
@@ -19,7 +20,24 @@ pub(crate) struct SectionScreen {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PageReading {
     pub text: String,
+    pub rendered_html: Option<RenderedMarkdown>,
     pub edit_to: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PageEditorMode {
+    Visual,
+    Source,
+}
+
+impl PageEditorMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Visual => "visual",
+            Self::Source => "source",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -28,6 +46,9 @@ pub(crate) struct PageEditorForm {
     pub action: String,
     pub cancel_to: Option<String>,
     pub text: String,
+    pub source: String,
+    pub content_format: PageContentFormat,
+    pub editor_mode: PageEditorMode,
     pub revision: String,
     pub error: Option<&'static str>,
     pub conflict: Option<PageEditConflict>,

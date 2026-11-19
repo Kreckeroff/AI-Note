@@ -64,6 +64,7 @@ export interface DocumentFormModel {
 export interface PageReadingModel {
   text: string;
   editTo: string | null;
+  renderedHtml: string | null;
 }
 
 interface PageRevision {
@@ -74,6 +75,9 @@ interface PageRevision {
 export interface PageEditorForm extends PageRevision {
   action: string;
   cancelTo: string | null;
+  source: string;
+  contentFormat: 'literal' | 'markdown';
+  editorMode: 'visual' | 'source';
   error: string | null;
   conflict: PageRevision | null;
   canSave: boolean;
@@ -192,6 +196,7 @@ function isDocumentForm(value: unknown): boolean {
 
 function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
+    (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
     (value.editTo === null || isWorkspacePath(value.editTo));
 }
 
@@ -200,7 +205,9 @@ function isPageRevision(value: unknown): value is Fields {
 }
 
 function isPageEditorForm(value: unknown): boolean {
-  return isPageRevision(value) && isWorkspacePath(value.action) &&
+  return isPageRevision(value) && isWorkspacePath(value.action) && strings(value, 'source') &&
+    (value.contentFormat === 'literal' || value.contentFormat === 'markdown') &&
+    (value.editorMode === 'visual' || value.editorMode === 'source') &&
     (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
     (value.error === null || typeof value.error === 'string') &&
     (value.conflict === null || isPageRevision(value.conflict)) && typeof value.canSave === 'boolean';

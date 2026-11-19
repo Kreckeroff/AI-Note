@@ -2,12 +2,29 @@ use std::borrow::Cow;
 
 use unicode_normalization::UnicodeNormalization;
 
-pub(crate) fn js_trim(value: &str) -> &str {
-    value.trim_matches(|ch| {
-        matches!(ch,
+pub(crate) fn escape_html(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+pub(crate) fn is_js_whitespace(ch: char) -> bool {
+    matches!(ch,
         '\t'..='\r' | ' ' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
         | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
-    })
+}
+
+pub(crate) fn js_trim(value: &str) -> &str {
+    value.trim_matches(is_js_whitespace)
 }
 
 pub(crate) fn fold_name(value: &str) -> String {

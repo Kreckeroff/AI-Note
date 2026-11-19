@@ -20,9 +20,15 @@ function Application({page}: {page: PageModel}) {
 function hasNativeInteraction(container: HTMLElement): boolean {
   if (container.querySelector('[data-workspace-choice][open], [data-page-editor-pending]')) return true;
   if (container.contains(document.activeElement) && !document.activeElement?.id) return true;
-  return Array.from(container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([type="hidden"]), textarea'))
-    .some(field => field.value !== field.defaultValue ||
-      field instanceof HTMLInputElement && field.checked !== field.defaultChecked);
+  const fields = container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+    'input:not([type="hidden"]):enabled, textarea:enabled',
+  );
+  return Array.from(fields).some(field => {
+    if (field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio')) {
+      return field.checked !== field.defaultChecked;
+    }
+    return field.value !== field.defaultValue;
+  });
 }
 
 function enhanceNative(container: HTMLElement) {

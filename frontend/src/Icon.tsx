@@ -11,6 +11,14 @@ const paths = {
   down: 'm6 9 6 6 6-6',
   next: 'm9 6 6 6-6 6',
   search: 'M20 20l-4-4 M18 11a7 7 0 11-14 0 7 7 0 0114 0z',
+  list: 'M9 6h12 M9 12h12 M9 18h12 M4 6h.01 M4 12h.01 M4 18h.01',
+  code: 'm8 6-6 6 6 6m8-12 6 6-6 6m-2-15-4 18',
+  quote: 'M3 6h7v6H6c0 3-1 4-3 5m11-11h7v6h-4c0 3-1 4-3 5',
+  ordered: 'M9 6h12 M9 12h12 M9 18h12 M3 4l2-1v5 M3 11h3l-3 4h3 M3 18h3l-2 2h2v2H3',
+  check: 'M4 4h16v16H4z m4 8 3 3 5-6',
+  rule: 'M4 12h16',
+  table: 'M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16',
+  clipboard: 'M8 5H5v16h14V5h-3 M8 3h8v5H8z M8 12h8m-8 4h5',
 };
 
 export function Icon({name = 'north'}: {name?: keyof typeof paths}) {

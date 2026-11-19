@@ -111,9 +111,12 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
                     Редактировать
                   </a>
                 )}
-                {reading?.text ?
-                  <div className="document-text">{reading.text}</div> :
-                  <p className="document-empty">Пока здесь ничего нет.</p>}
+                {reading?.renderedHtml ? (
+                  // The server supplies this fragment from its allowlisted Markdown renderer.
+                  <div className="document-text document-markdown" dangerouslySetInnerHTML={{__html: reading.renderedHtml}} />
+                ) : reading?.renderedHtml === null && reading.text ? (
+                  <div className="document-text">{reading.text}</div>
+                ) : <p className="document-empty">Пока здесь ничего нет.</p>}
               </>
             )
           ) : (
