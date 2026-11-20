@@ -59,6 +59,19 @@ pub(crate) fn attachment_reference_ids(source: &str) -> Vec<Uuid> {
     found.into_inner().into_iter().collect()
 }
 
+pub(crate) fn attachment_image_ids(source: &str) -> Vec<Uuid> {
+    let found = RefCell::new(BTreeSet::new());
+    if source.contains("attachment:") {
+        render_markdown_with_attachments(source, &|id, image| {
+            if image {
+                found.borrow_mut().insert(id);
+            }
+            None
+        });
+    }
+    found.into_inner().into_iter().collect()
+}
+
 fn run(text: &[u8], marker: u8) -> usize {
     text.iter().take_while(|&&ch| ch == marker).count()
 }

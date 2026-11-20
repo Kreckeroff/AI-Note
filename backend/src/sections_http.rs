@@ -25,7 +25,10 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    db::{CreateSection, Page, PageAddress, Principal, Section, SectionTree, Space, Store},
+    db::{
+        CreateSection, Page, PageAddress, Principal, Section, SectionTree, Space, Store, Tenant,
+        TenantSpaces,
+    },
     http::{self, html, plain, redirect},
     sections::{NameForm, PageEditorForm, PageReading, SectionScreen},
     views,
@@ -107,6 +110,7 @@ struct DocumentsPage {
     context: WorkspaceContext,
     space: Space,
     tree: SectionTree,
+    page_only: bool,
 }
 
 #[derive(Default)]
@@ -115,6 +119,8 @@ struct Selection {
     page: Option<Page>,
     reading: Option<PageReading>,
     editor: Option<PageEditorForm>,
+    access_role: Option<String>,
+    can_share: bool,
 }
 
 enum CreationDialog {
@@ -141,6 +147,66 @@ impl DocumentsPage {
         })
     }
 
+    fn with_visible_context(
+        self,
+        address: &PageAddress,
+        principal: &Principal,
+        selected: &mut Selection,
+        can_browse_space: bool,
+    ) -> Self {
+        if self.page_only || can_browse_space {
+            return self;
+        }
+        let page = selected.page.take().expect("selected document is present");
+        let isolated = Self::page_only(address, principal, page);
+        *selected = isolated
+            .select_page(address.page)
+            .expect("isolated document is present");
+        isolated
+    }
+
+    fn page_only(address: &PageAddress, principal: &Principal, mut page: Page) -> Self {
+        page.section_id = Uuid::nil();
+        let tenant = Tenant {
+            id: address.tenant,
+            name: String::new(),
+            role: "member".into(),
+            can_create: false,
+        };
+        let context = WorkspaceContext::build(
+            TenantSpaces {
+                tenant,
+                tenants: Vec::new(),
+                spaces: Vec::new(),
+            },
+            principal,
+            CatalogOptions::parse(""),
+            false,
+        );
+        let space = Space {
+            id: address.space,
+            name: String::new(),
+            owner_name: String::new(),
+            is_owner: false,
+            tenant_role: "member".into(),
+            grant_role: None,
+        };
+        let tree = SectionTree {
+            can_create: false,
+            sections: vec![Section {
+                id: Uuid::nil(),
+                title: String::new(),
+            }],
+            pages: vec![page],
+        };
+        Self {
+            context,
+            space,
+            tree,
+            page_only: true,
+        }
+    }
+
     fn render(
         self,
         status: StatusCode,
@@ -153,6 +219,9 @@ impl DocumentsPage {
             None => (None, None),
         };
         let tree = SectionScreen {
+            page_only: self.page_only,
+            can_share: selected.can_share,
+            access_role: selected.access_role,
             sections: self.tree.sections,
             pages: self.tree.pages,
             selected: selected.section,
@@ -234,6 +303,12 @@ pub(crate) async fn handle(
         }
         _ => {}
     }
+    if let DocumentsTarget::Page(id) | DocumentsTarget::EditPage(id) = route.target {
+        return match load_page(store, &nav, principal, id).await? {
+            Some(page) => editor::open(store, &nav, id, principal, page).await,
+            None => denied_page(store, &nav.page_address(id, principal)).await,
+        };
+    }
     let Some(page) = load(store, &nav, principal).await? else {
         record(principal.id, route, "not-found");
         return Ok(not_found(route.target));
@@ -282,9 +357,6 @@ pub(crate) async fn handle(
                 Some(CreationDialog::Section(form)),
             )
         }
-        DocumentsTarget::Page(id) | DocumentsTarget::EditPage(id) => {
-            return editor::open(store, &nav, id, principal, page).await;
-        }
         DocumentsTarget::NewPage(section_id) => {
             let Some(section) = page.section(Some(section_id)) else {
                 record(principal.id, route, "not-found");
@@ -305,6 +377,8 @@ pub(crate) async fn handle(
             )
         }
         DocumentsTarget::Sections
+        | DocumentsTarget::Page(_)
+        | DocumentsTarget::EditPage(_)
         | DocumentsTarget::Pages(_)
         | DocumentsTarget::UploadCover(_)
         | DocumentsTarget::CoverImage { .. }
@@ -345,7 +419,51 @@ async fn load(
         context,
         space,
         tree,
+        page_only: false,
     }))
+}
+
+async fn load_page(
+    store: &Store,
+    nav: &DocumentNavigation,
+    principal: &Principal,
+    id: Uuid,
+) -> Result<Option<DocumentsPage>, sqlx::Error> {
+    let address = nav.page_address(id, principal);
+    let Some(permission) = store.page_permissions(&address).await? else {
+        return Ok(None);
+    };
+    if !permission.can_read {
+        return Ok(None);
+    }
+    if permission.can_browse_space {
+        // The access or tree may have changed since the permission snapshot.
+        if let Some(workspace) = load(store, nav, principal).await?
+            && workspace.tree.pages.iter().any(|page| page.id == id)
+        {
+            return Ok(Some(workspace));
+        }
+    }
+    let Some(page) = store.standalone_page(&address).await? else {
+        return Ok(None);
+    };
+    Ok(Some(DocumentsPage::page_only(&address, principal, page)))
+}
+
+async fn denied_page(store: &Store, address: &PageAddress) -> Result<Response, sqlx::Error> {
+    let request_to = store
+        .is_active_member(address.tenant, address.account)
+        .await?
+        .then(|| {
+            format!(
+                "{}/sharing",
+                page_path(address.tenant, address.space, address.page)
+            )
+        });
+    Ok(html(
+        StatusCode::NOT_FOUND,
+        views::page_denied(request_to.as_deref(), false),
+    ))
 }
 
 async fn submit(

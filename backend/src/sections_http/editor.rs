@@ -5,12 +5,12 @@ use uuid::Uuid;
 
 use super::{
     DocumentNavigation, DocumentsPage, FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, attachments,
-    load, not_found, record,
+    not_found, record,
 };
 use crate::{
     db::{
         Attachment, AttachmentPatch, CoverUpdate, PageAddress, PageContentFormat, PageCover,
-        PageText, PageUpdate, Principal, SavePageText, Store,
+        PageUpdate, Principal, SavePageText, Store,
     },
     http::{self, Form, FormError, html, plain, redirect},
     markdown::{render_markdown, render_markdown_with_attachments},
@@ -376,10 +376,19 @@ pub(super) async fn open(
         record(principal.id, route, "not-found");
         return Ok(not_found(route.target));
     };
-    let Some(current) = store.page_text(&nav.page_address(id, principal)).await? else {
+    let address = nav.page_address(id, principal);
+    let Some(current) = store.page_text(&address).await? else {
         record(principal.id, route, "not-found");
-        return Ok(not_found(route.target));
+        return super::denied_page(store, &address).await;
     };
+    let page =
+        page.with_visible_context(&address, principal, &mut selected, current.can_browse_space);
+    selected.can_share = current.can_manage;
+    selected.access_role = Some(if current.can_manage {
+        "owner".into()
+    } else {
+        current.effective_role.clone()
+    });
     let files = attachments::published(route, id, current.attachments);
     if matches!(route.target, DocumentsTarget::EditPage(_)) {
         if !current.can_edit {
@@ -437,6 +446,7 @@ pub(super) async fn open(
             }
         };
         selected.reading = Some(PageReading {
+            revision: current.content_revision.to_string(),
             text,
             rendered_html,
             edit_to: current.can_edit.then(|| edit_to(nav, id)),
@@ -455,7 +465,7 @@ enum SaveFailure {
     Invalid(&'static str),
     AttachmentReferences,
     Forbidden,
-    Conflict(PageText),
+    Conflict,
 }
 
 pub(super) async fn submit(
@@ -515,10 +525,16 @@ pub(super) async fn submit(
             }
             Ok(Ok(SavePageText::Missing)) => {
                 record(principal.id, route, "not-found");
-                return not_found(route.target);
+                return unavailable_draft(nav, id, input);
             }
             Ok(Ok(SavePageText::Forbidden)) => SaveFailure::Forbidden,
-            Ok(Ok(SavePageText::Conflict(current))) => SaveFailure::Conflict(current),
+            Ok(Ok(SavePageText::Conflict(current))) => {
+                eprintln!(
+                    "page.edit.conflict page={id} revision={}",
+                    current.content_revision
+                );
+                SaveFailure::Conflict
+            }
             Ok(Ok(SavePageText::InvalidCover)) => SaveFailure::Invalid(INVALID_COVER),
             Ok(Ok(SavePageText::InvalidAttachments)) => SaveFailure::Invalid(INVALID_ATTACHMENTS),
             Ok(Ok(SavePageText::AttachmentReferencesPresent)) => SaveFailure::AttachmentReferences,
@@ -541,7 +557,12 @@ async fn render_failure(
     mut failure: SaveFailure,
 ) -> Response {
     let route = nav.route;
-    let workspace = match timeout(RECOVERY_TIMEOUT, load(store, nav, principal)).await {
+    let workspace = match timeout(
+        RECOVERY_TIMEOUT,
+        super::load_page(store, nav, principal, id),
+    )
+    .await
+    {
         Ok(Ok(workspace)) => workspace,
         Ok(Err(_)) | Err(_) => {
             record(principal.id, route, "unavailable");
@@ -552,48 +573,52 @@ async fn render_failure(
         workspace.and_then(|page| page.select_page(id).map(|selection| (page, selection)))
     else {
         record(principal.id, route, "not-found");
-        return not_found(route.target);
+        return unavailable_draft(nav, id, input);
     };
-    if !page.tree.can_create {
+    let address = nav.page_address(id, principal);
+    let current = match timeout(RECOVERY_TIMEOUT, store.page_text(&address)).await {
+        Ok(Ok(Some(current))) => current,
+        Ok(Ok(None)) => return unavailable_draft(nav, id, input),
+        Ok(Err(_)) | Err(_) => return retry(nav, id, input),
+    };
+    let page =
+        page.with_visible_context(&address, principal, &mut selected, current.can_browse_space);
+    selected.can_share = current.can_manage;
+    selected.access_role = Some(if current.can_manage {
+        "owner".into()
+    } else {
+        current.effective_role.clone()
+    });
+    if !current.can_edit {
         failure = SaveFailure::Forbidden;
     }
-    let address = nav.page_address(id, principal);
     let (status, error, conflict, files) = match failure {
         SaveFailure::Invalid(_) | SaveFailure::AttachmentReferences => {
-            let current = match timeout(RECOVERY_TIMEOUT, store.page_text(&address)).await {
-                Ok(Ok(Some(current))) => current,
-                Ok(Ok(None)) => return not_found(route.target),
-                Ok(Err(_)) | Err(_) => return retry(nav, id, input),
-            };
-            if !current.can_edit {
-                (StatusCode::FORBIDDEN, DENIED, None, Vec::new())
-            } else {
-                let error = match failure {
-                    SaveFailure::Invalid(error) => error,
-                    SaveFailure::AttachmentReferences => {
-                        if input.text_unchanged {
-                            input.source = normalize_line_endings(&current.source).into_owned();
-                            input.format = current.format;
-                            input.text = match current.format {
-                                PageContentFormat::Literal => markdown_to_text(&input.source),
-                                PageContentFormat::Markdown => input.source.clone(),
-                            };
-                            input.text_base = Some(text_fingerprint(current.format, &input.source));
-                        }
-                        ATTACHMENT_REFERENCES
+            let error = match failure {
+                SaveFailure::Invalid(error) => error,
+                SaveFailure::AttachmentReferences => {
+                    if input.text_unchanged {
+                        input.source = normalize_line_endings(&current.source).into_owned();
+                        input.format = current.format;
+                        input.text = match current.format {
+                            PageContentFormat::Literal => markdown_to_text(&input.source),
+                            PageContentFormat::Markdown => input.source.clone(),
+                        };
+                        input.text_base = Some(text_fingerprint(current.format, &input.source));
                     }
-                    _ => unreachable!(),
-                };
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    error,
-                    None,
-                    current.attachments,
-                )
-            }
+                    ATTACHMENT_REFERENCES
+                }
+                _ => unreachable!(),
+            };
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                error,
+                None,
+                current.attachments,
+            )
         }
         SaveFailure::Forbidden => (StatusCode::FORBIDDEN, DENIED, None, Vec::new()),
-        SaveFailure::Conflict(current) => (
+        SaveFailure::Conflict => (
             StatusCode::CONFLICT,
             if input.cover.is_some()
                 || input.cover_base.is_some_and(|base| base != current.cover)
@@ -628,6 +653,21 @@ async fn render_failure(
     selected.editor = Some(form);
     record(principal.id, route, status.as_str());
     page.render(status, selected, None)
+}
+
+fn unavailable_draft(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
+    if input.plain_post {
+        return not_found(nav.route.target);
+    }
+    let form = input.editor_form(
+        nav,
+        id,
+        Some(return_to(nav, id)),
+        "Страница недоступна. Черновик можно скопировать.",
+        None,
+        false,
+    );
+    html(StatusCode::NOT_FOUND, views::page_edit_retry(&form))
 }
 
 fn retry(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {

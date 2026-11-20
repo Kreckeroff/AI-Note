@@ -61,7 +61,11 @@ pub(super) enum ClientPage<'a> {
     },
     SpaceNotFound,
     SectionNotFound,
-    PageNotFound,
+    PageNotFound {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_to: Option<&'a str>,
+        request_sent: bool,
+    },
     CreateSpace {
         #[serde(serialize_with = "serialize_workspace")]
         workspace: &'a WorkspaceContext,
@@ -275,6 +279,12 @@ struct SectionTreeData<'a> {
     sections: Vec<SectionData<'a>>,
     selected: Option<SectionData<'a>>,
     can_create_section: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    page_only: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    can_share: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_role: Option<&'a str>,
     form: Option<NameFormData<'a>>,
     pages: Vec<PageData<'a>>,
     selected_page: Option<PageData<'a>>,
@@ -282,6 +292,10 @@ struct SectionTreeData<'a> {
     page_form: Option<NameFormData<'a>>,
     reading: Option<&'a PageReading>,
     editor: Option<&'a PageEditorForm>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn serialize_section_tree<S: Serializer>(
@@ -292,6 +306,9 @@ fn serialize_section_tree<S: Serializer>(
         sections: tree.sections.iter().map(SectionData::from).collect(),
         selected: tree.selected.as_ref().map(SectionData::from),
         can_create_section: tree.can_create_section,
+        page_only: tree.page_only,
+        can_share: tree.can_share,
+        access_role: tree.access_role.as_deref(),
         form: tree.form.as_ref().map(NameFormData::from),
         pages: tree.pages.iter().map(PageData::from).collect(),
         selected_page: tree.selected_page.as_ref().map(PageData::from),

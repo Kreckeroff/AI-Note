@@ -13,7 +13,7 @@ use crate::{
     db::{AttachmentLookup, PageAddress, PageHistory, RestorePageRevision, Store},
     http::{self, Form, FormError, html, plain, redirect},
     views::{self, history as view},
-    workspace::{DocumentsRoute, HistoryTarget, revision_number},
+    workspace::{DocumentsRoute, HistoryTarget, canonical_uuid, revision_number},
 };
 
 use super::{FORM_TIMEOUT, RECOVERY_TIMEOUT, SAVE_TIMEOUT, attachments, cover_unauthenticated};
@@ -136,9 +136,22 @@ pub(super) async fn handle(
             let Some(history) = store.page_history(address, None).await? else {
                 return Ok(missing());
             };
+            let quote = if let Some(thread) = canonical_uuid(query.get("comment")) {
+                store
+                    .discussion_history_quote(address, thread, revision)
+                    .await?
+            } else {
+                None
+            };
             Ok(html(
                 StatusCode::OK,
-                view::snapshot(&links, &snapshot, &history, query.get("restore") == "1"),
+                view::snapshot(
+                    &links,
+                    &snapshot,
+                    &history,
+                    query.get("restore") == "1",
+                    quote.as_ref(),
+                ),
             ))
         }
         HistoryTarget::Cover(revision) => {

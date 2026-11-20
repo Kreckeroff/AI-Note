@@ -56,6 +56,12 @@ pub(crate) fn check_origin(headers: &HeaderMap, origin: &str) -> bool {
     single_header(headers, header::ORIGIN) == Some(origin)
 }
 
+pub(crate) fn media_type(headers: &HeaderMap) -> Option<&str> {
+    single_header(headers, header::CONTENT_TYPE)
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+}
+
 pub(crate) fn single_header(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     let mut values = headers.get_all(name).iter();
     let value = values.next()?.to_str().ok()?;
@@ -122,9 +128,7 @@ pub(crate) async fn read_form_bounded(
     request: Request,
     max_bytes: usize,
 ) -> Result<Form, FormError> {
-    let encoding = single_header(request.headers(), header::CONTENT_TYPE)
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
+    let encoding = media_type(request.headers())
         .is_some_and(|value| value.eq_ignore_ascii_case("application/x-www-form-urlencoded"));
     if !encoding {
         return Err(FormError::WrongEncoding);

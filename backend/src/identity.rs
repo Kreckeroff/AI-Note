@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::http::{HeaderMap, header};
@@ -13,6 +12,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
+
+pub(crate) use crate::clock::now_ms;
 
 use crate::{
     db::{NewAccount, NewSession, Principal, Store},
@@ -75,13 +76,6 @@ pub(crate) fn prepare_account(
         password_hash: derive_password(password, &salt).to_vec(),
         salt: salt.to_vec(),
     })
-}
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 pub(crate) fn random_token() -> String {

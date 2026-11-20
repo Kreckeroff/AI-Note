@@ -12,6 +12,15 @@ impl Store {
         for tenant in &config.tenants {
             sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name")
             .bind(tenant.id).bind(&tenant.name).execute(&mut *tx).await?;
+            if tenant.allow_guests.is_some() || tenant.allow_public_links.is_some() {
+                configure_sharing(
+                    &mut tx,
+                    tenant.id,
+                    tenant.allow_guests,
+                    tenant.allow_public_links,
+                )
+                .await?;
+            }
         }
         for member in &config.memberships {
             let account = account_for_update(&mut tx, &member.email)
@@ -84,8 +93,57 @@ async fn account_for_update(
     conn: &mut PgConnection,
     email: &str,
 ) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT id FROM accounts WHERE email = $1 FOR UPDATE")
+    sqlx::query_scalar("SELECT id FROM accounts WHERE email = $1 FOR NO KEY UPDATE")
         .bind(email)
         .fetch_optional(conn)
         .await
+}
+
+async fn configure_sharing(
+    conn: &mut PgConnection,
+    tenant: Uuid,
+    allow_guests: Option<bool>,
+    allow_public: Option<bool>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO tenant_sharing_policies (tenant_id,allow_guests,allow_public)
+         VALUES ($1,COALESCE($2,false),COALESCE($3,false))
+         ON CONFLICT (tenant_id) DO UPDATE SET
+         allow_guests = COALESCE($2,tenant_sharing_policies.allow_guests),
+         allow_public = COALESCE($3,tenant_sharing_policies.allow_public)",
+    )
+    .bind(tenant)
+    .bind(allow_guests)
+    .bind(allow_public)
+    .execute(&mut *conn)
+    .await?;
+    let now = crate::clock::now_ms();
+    if allow_guests == Some(false) {
+        sqlx::query(
+            "UPDATE page_guest_invitations SET revoked_at = $2
+             WHERE tenant_id = $1 AND revoked_at IS NULL AND accepted_at IS NULL",
+        )
+        .bind(tenant)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if allow_public == Some(false) {
+        sqlx::query(
+            "UPDATE space_public_policies SET enabled = false, version = version + 1
+             WHERE tenant_id = $1 AND enabled",
+        )
+        .bind(tenant)
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "UPDATE public_page_links SET revoked_at = $2
+             WHERE tenant_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(tenant)
+        .bind(now)
+        .execute(conn)
+        .await?;
+    }
+    Ok(())
 }

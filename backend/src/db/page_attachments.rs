@@ -8,8 +8,7 @@ use uuid::Uuid;
 
 use super::{
     Store,
-    page_access::{PageAddress, PageEditAccess, lock_page_for_edit},
-    sections::SPACE_ACCESS,
+    page_access::{PAGE_ACCESS, PageAddress, PageEditAccess, lock_page_for_edit},
 };
 
 mod publication;
@@ -252,12 +251,13 @@ impl Store {
         match lookup {
             AttachmentLookup::Published(publication) => {
                 let query = format!(
-                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({SPACE_ACCESS}) access
+                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({PAGE_ACCESS}) access
                      JOIN page_attachments live
                         ON (live.tenant_id, live.space_id, live.page_id, live.publication) = ($1, $2, $4, $5)
                      JOIN page_attachment_assets asset
                         ON (asset.tenant_id, asset.space_id, asset.page_id, asset.id)
-                         = (live.tenant_id, live.space_id, live.page_id, live.asset_id)",
+                         = (live.tenant_id, live.space_id, live.page_id, live.asset_id)
+                     WHERE access.can_read",
                 );
                 sqlx::query_as(&query)
                     .bind(address.tenant)
@@ -270,10 +270,10 @@ impl Store {
             }
             AttachmentLookup::Draft { draft, id } => {
                 let query = format!(
-                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({SPACE_ACCESS}) access
+                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({PAGE_ACCESS}) access
                      JOIN page_attachment_assets asset
                         ON (asset.tenant_id, asset.space_id, asset.page_id, asset.id) = ($1, $2, $4, $6)
-                     WHERE access.can_create AND {VALID_DRAFT} AND {ACTIVE_STAGE}",
+                     WHERE access.can_edit AND {VALID_DRAFT} AND {ACTIVE_STAGE}",
                 );
                 sqlx::query_as(&query)
                     .bind(address.tenant)
@@ -287,14 +287,14 @@ impl Store {
             }
             AttachmentLookup::Revision { revision, id } => {
                 let query = format!(
-                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({SPACE_ACCESS}) access
+                    "SELECT asset.name, asset.bytes, asset.image_type FROM ({PAGE_ACCESS}) access
                      JOIN page_revision_attachments snapshot ON
                         (snapshot.tenant_id, snapshot.space_id, snapshot.page_id, snapshot.revision, snapshot.asset_id)
                          = ($1, $2, $4, $5, $6)
                      JOIN page_attachment_assets asset ON
                         (asset.tenant_id, asset.space_id, asset.page_id, asset.id)
                          = (snapshot.tenant_id, snapshot.space_id, snapshot.page_id, snapshot.asset_id)
-                     WHERE access.can_create",
+                     WHERE access.can_edit",
                 );
                 sqlx::query_as(&query)
                     .bind(address.tenant)
@@ -318,12 +318,14 @@ impl Store {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        // A draft row already references its page. The capability check can
+        // recover its metadata even when the pages relation is unavailable.
         let query = format!(
             "SELECT asset.id, asset.name, asset.byte_length AS size, asset.image_type IS NOT NULL AS image,
-                    NULL::uuid AS publication FROM ({SPACE_ACCESS}) access
+                    NULL::uuid AS publication FROM page_capabilities($1, $2, $3, $4) access
              JOIN page_attachment_assets asset ON
                 (asset.tenant_id, asset.space_id, asset.page_id) = ($1, $2, $4)
-             WHERE access.can_create AND {VALID_DRAFT} AND {ACTIVE_STAGE} AND asset.id = ANY($6)
+             WHERE access.can_edit AND {VALID_DRAFT} AND {ACTIVE_STAGE} AND asset.id = ANY($6)
              ORDER BY asset.staged_at, asset.id",
         );
         sqlx::query_as(&query)

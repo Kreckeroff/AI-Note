@@ -1,7 +1,10 @@
 use std::fmt::Write;
 
 use crate::{
-    db::{PageContentFormat, PageCover, PageHistory, PageRevisionSnapshot},
+    db::{
+        PageContentFormat, PageCover, PageHistory, PageRevisionSnapshot,
+        page_discussion::DiscussionQuote,
+    },
     sections::{CoverView, PageAttachmentView},
     workspace::{page_history_path, page_path},
 };
@@ -219,6 +222,7 @@ pub(crate) fn snapshot(
     snapshot: &PageRevisionSnapshot,
     history: &PageHistory,
     confirming: bool,
+    quote: Option<&DiscussionQuote>,
 ) -> String {
     let number = snapshot.revision;
     let current = snapshot.current_revision.max(history.current_revision);
@@ -263,8 +267,14 @@ pub(crate) fn snapshot(
             .collect();
         attachment_list(&files)
     };
+    let quote = quote.map(|quote| format!(
+        r#"<section aria-labelledby="history-quote"><h2 id="history-quote" tabindex="-1">Цитата из обсуждения</h2><blockquote>{}<mark>{}</mark>{}</blockquote></section>"#,
+        html(&quote.before),
+        html(&quote.quote),
+        html(&quote.after),
+    )).unwrap_or_default();
     let content = format!(
-        r#"{confirmation}
+        r#"{confirmation}{quote}
         <section aria-labelledby="history-cover"><h2 id="history-cover">Обложка</h2>{}</section>
         <section aria-labelledby="history-markdown"><h2 id="history-markdown">Исходный Markdown</h2><p>Формат — {format}</p>{}</section>
         {attachments}"#,
@@ -606,10 +616,20 @@ mod tests {
             items: Vec::new(),
             next_before: Some(3),
         };
-        let preview = super::snapshot(&links, &snapshot, &history, true);
+        let preview = super::snapshot(&links, &snapshot, &history, true, None);
         assert!(!preview.contains("name=\"baseRevision\""));
         assert!(!preview.contains("/restore"));
         assert!(preview.contains("&lt;snapshot&gt;"));
+        let quote = DiscussionQuote {
+            before: "A < ".to_owned(),
+            quote: "<script>".to_owned(),
+            after: " > B".to_owned(),
+        };
+        let details = super::snapshot(&links, &snapshot, &history, false, Some(&quote));
+        assert!(details.contains(r#"id="history-quote""#));
+        assert!(
+            details.contains("<blockquote>A &lt; <mark>&lt;script&gt;</mark> &gt; B</blockquote>")
+        );
         assert!(preview.contains("/revisions/5?preview=1\">К текущей странице"));
         assert!(preview.contains("history-page-sidebar"));
         assert!(preview.contains("Текст &lt; 5.txt"));
@@ -622,7 +642,7 @@ mod tests {
         assert!(comparison.contains("?before=3&amp;preview=1\""));
 
         let reading = Links::new(Uuid::nil(), Uuid::nil(), Uuid::nil(), false);
-        let confirmation = super::snapshot(&reading, &snapshot, &history, true);
+        let confirmation = super::snapshot(&reading, &snapshot, &history, true, None);
         assert!(confirmation.contains(&format!("{}\">К текущей странице", reading.current)));
         assert!(confirmation.contains("name=\"baseRevision\" value=\"5\""));
         assert!(confirmation.contains("history-page-sidebar"));

@@ -1,15 +1,8 @@
-import {useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore} from 'react';
+import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {Icon} from '../Icon';
 import {historySnapshotHref, readPageHistory, type PageHistory} from './pageHistory';
 
-const narrowScreen = '(max-width: 890px)';
 const historyDate = new Intl.DateTimeFormat('ru-RU', {dateStyle: 'medium', timeStyle: 'short'});
-
-function subscribeToScreen(onChange: () => void) {
-  const screen = window.matchMedia(narrowScreen);
-  screen.addEventListener('change', onChange);
-  return () => screen.removeEventListener('change', onChange);
-}
 
 type ListState = {
   phase: 'loading' | 'ready' | 'unavailable' | 'error';
@@ -18,16 +11,12 @@ type ListState = {
 
 type ListRequest = {href: string; previous: PageHistory | null};
 
-export function PageHistoryPanel({id, historyTo, editing, onDismiss}: {
-  id: string;
+export function PageHistoryPanel({historyTo, editing, active}: {
   historyTo: string;
   editing: boolean;
-  onDismiss(): void;
+  active: boolean;
 }) {
-  const titleId = useId();
-  const overlay = useSyncExternalStore(subscribeToScreen, () => window.matchMedia(narrowScreen).matches, () => false);
-  const dialog = useRef<HTMLDialogElement>(null);
-  const closeButton = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const listElement = useRef<HTMLUListElement>(null);
   const loadButton = useRef<HTMLButtonElement>(null);
   const loadFocusIndex = useRef<number | null>(null);
@@ -35,24 +24,18 @@ export function PageHistoryPanel({id, historyTo, editing, onDismiss}: {
   const [list, setList] = useState<ListState>({phase: 'loading', data: null});
 
   useLayoutEffect(() => {
-    const panel = dialog.current;
-    panel?.showModal();
-    closeButton.current?.focus({preventScroll: true});
-    return () => panel?.close();
-  }, [overlay]);
-
-  useLayoutEffect(() => {
     if (list.phase === 'loading' || loadFocusIndex.current === null) return;
     const replacement = listElement.current?.querySelectorAll('a')[loadFocusIndex.current];
     const active = document.activeElement;
     if (list.phase === 'ready' && (active === loadButton.current || active === document.body)) {
       if (replacement) replacement.focus();
-      else if (!loadButton.current) closeButton.current?.focus({preventScroll: true});
+      else if (!loadButton.current) heading.current?.focus({preventScroll: true});
     }
     loadFocusIndex.current = null;
   }, [list]);
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     const {href, previous} = request;
     const {signal} = controller;
@@ -94,7 +77,7 @@ export function PageHistoryPanel({id, historyTo, editing, onDismiss}: {
 
     void fetchHistory();
     return () => controller.abort();
-  }, [historyTo, request]);
+  }, [active, historyTo, request]);
 
   function more() {
     if (!list.data?.nextTo || list.phase !== 'ready') return;
@@ -113,14 +96,9 @@ export function PageHistoryPanel({id, historyTo, editing, onDismiss}: {
   const failed = list.phase === 'error' || list.phase === 'unavailable';
   const empty = list.phase === 'ready' && list.data?.items.length === 0;
 
-  const contents = <>
-    <header className="document-history-header">
-      <h2 id={titleId}>История</h2>
-      <button ref={closeButton} type="button" className="space-action space-close" aria-label="Закрыть историю" onClick={onDismiss}>
-        <Icon name="close" />
-      </button>
-    </header>
-    <div className="document-history-body">
+  return (
+    <div className="document-history-body page-history-list">
+      <h3 ref={heading} tabIndex={-1}>Редакции страницы</h3>
       {editing && <p className="document-history-note">Редакции открываются в новой вкладке.</p>}
       {list.data && list.data.items.length > 0 && (
         <ul ref={listElement} className="document-history-list">
@@ -161,18 +139,5 @@ export function PageHistoryPanel({id, historyTo, editing, onDismiss}: {
         </button>
       )}
     </div>
-  </>;
-
-  return overlay ? (
-    <dialog ref={dialog} id={id} className="document-history-overlay" aria-labelledby={titleId}
-      onCancel={event => { event.preventDefault(); onDismiss(); }}>
-      {contents}
-    </dialog>
-  ) : (
-    <aside id={id} className="document-history-dock" aria-labelledby={titleId} onKeyDown={event => {
-      if (event.key === 'Escape') { event.preventDefault(); onDismiss(); }
-    }}>
-      {contents}
-    </aside>
   );
 }

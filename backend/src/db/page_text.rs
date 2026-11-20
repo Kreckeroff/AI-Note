@@ -11,13 +11,12 @@ use crate::{
 
 use super::{
     Attachment, AttachmentPatch, PageContentFormat, Store,
-    page_access::{PageAddress, PageEditAccess, lock_page_for_edit},
+    page_access::{PAGE_ACCESS, PageAddress, PageEditAccess, lock_page_for_edit},
     page_attachments::{
         CURRENT_ATTACHMENTS, apply_attachment_patch, decode_attachments, has_retired_attachments,
     },
     page_cover::{CoverUpdate, PageCover, update_page_cover},
     page_history::{ensure_baseline, record_current_snapshot},
-    sections::SPACE_ACCESS,
 };
 
 pub(crate) struct PageText {
@@ -25,6 +24,9 @@ pub(crate) struct PageText {
     pub format: PageContentFormat,
     pub content_revision: i64,
     pub can_edit: bool,
+    pub can_manage: bool,
+    pub can_browse_space: bool,
+    pub effective_role: String,
     pub cover: PageCover,
     pub attachments: Vec<Attachment>,
 }
@@ -154,6 +156,9 @@ struct PageTextRow {
     is_markdown: bool,
     content_revision: i64,
     can_edit: bool,
+    can_manage: bool,
+    can_browse_space: bool,
+    effective_role: String,
     theme: Option<String>,
     asset_id: Option<Uuid>,
     attachments: String,
@@ -165,10 +170,12 @@ async fn read(
 ) -> Result<Option<PageText>, sqlx::Error> {
     let query = format!(
         "SELECT p.markdown AS source, p.content_is_markdown AS is_markdown, p.content_revision,
-                access.can_create AS can_edit, c.theme, c.asset_id, {CURRENT_ATTACHMENTS} AS attachments
-         FROM ({SPACE_ACCESS}) access
+                access.can_edit, access.can_manage, access.can_browse_space, access.effective_role,
+                c.theme, c.asset_id, {CURRENT_ATTACHMENTS} AS attachments
+         FROM ({PAGE_ACCESS}) access
          JOIN pages p ON (p.tenant_id, p.space_id, p.id) = ($1, $2, $4)
-         LEFT JOIN page_covers c ON (c.tenant_id, c.space_id, c.page_id) = ($1, $2, $4)"
+         LEFT JOIN page_covers c ON (c.tenant_id, c.space_id, c.page_id) = ($1, $2, $4)
+         WHERE access.can_read"
     );
     let row: Option<PageTextRow> = sqlx::query_as(&query)
         .bind(address.tenant)
@@ -183,6 +190,9 @@ async fn read(
             format: PageContentFormat::from_markdown(row.is_markdown),
             content_revision: row.content_revision,
             can_edit: row.can_edit,
+            can_manage: row.can_manage,
+            can_browse_space: row.can_browse_space,
+            effective_role: row.effective_role,
             cover: PageCover::from_storage(row.theme.as_deref(), row.asset_id),
             attachments: decode_attachments(&row.attachments)?,
         })

@@ -1,4 +1,4 @@
-import {useId, useLayoutEffect, useRef, useState} from 'react';
+import {useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {Catalog, accessLabel} from './Catalog';
 import {CreateSpaceDialog} from './CreateSpaceDialog';
 import {DocumentCreationDialog} from './DocumentCreationDialog';
@@ -7,7 +7,11 @@ import {PageEditor} from './PageEditor';
 import {PageAttachmentList} from './editor/PageAttachmentList';
 import {WorkspacePicker} from './WorkspacePicker';
 import {PageCoverArt} from './editor/CoverGallery';
-import {PageHistoryPanel} from './editor/PageHistoryPanel';
+import {PageInspector, type DiscussionReference, type InspectorTab} from './collaboration/PageInspector';
+import {PageSharingDialog} from './collaboration/PageSharingDialog';
+import {PageNotifications} from './collaboration/PageNotifications';
+import {discussionRange, focusLinkedFragment, scrollToRange, selectedPageAnchor, type DiscussionAnchor, type SelectionAnchor} from './collaboration/pageAnchors';
+import {usePageCommand} from './collaboration/api';
 import type {SectionTreeModel, Space, WorkspaceModel, WorkspacePageModel} from './model';
 import {newPagePath, newSectionPath, pagePath, sectionPath, spacePath, spacesPath, withOptions} from './routes';
 
@@ -25,20 +29,44 @@ function WorkspaceHeader({workspace, space}: {workspace: WorkspaceModel; space?:
           {space && <span aria-current="page">Документы</span>}
         </nav>
       </div>
-      {accountName && <span className="space-account" title={accountName}>{accountName}</span>}
+      <div className="workspace-account-tools">
+        <PageNotifications />
+        {accountName && <span className="space-account" title={accountName}>{accountName}</span>}
+      </div>
     </header>
   );
 }
 
+function discussionReference(): DiscussionReference | undefined {
+  const query = new URLSearchParams(window.location.search);
+  const thread = query.get('thread') ?? '';
+  const hashComment = /^#comment-(.+)$/u.exec(window.location.hash)?.[1];
+  const comment = query.get('comment') ?? hashComment ?? thread;
+  const id = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
+  if (id.test(thread) && id.test(comment)) return {thread, comment};
+}
+
 function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}) {
   const {tenant, catalog: {options}} = workspace;
-  const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage, reading, editor} = tree;
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const historyPanelId = useId();
-  const historyTrigger = useRef<HTMLButtonElement>(null);
-  const returnHistoryFocus = useRef(false);
-  const historyTo = editor ? editor.historyTo : reading?.historyTo;
-  const canOpenHistory = selectedPage && historyTo === `${pagePath(tenant.id, space.id, selectedPage.id)}/revisions`;
+  const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage, reading, editor, pageOnly} = tree;
+  const [reference] = useState(discussionReference);
+  const [inspectorOpen, setInspectorOpen] = useState(Boolean(reference));
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(reference ? 'comments' : 'context');
+  const [shareOpen, setShareOpen] = useState(false);
+  const [selection, setSelection] = useState<SelectionAnchor | null>(null);
+  const [anchor, setAnchor] = useState<SelectionAnchor | null>(null);
+  const inspectorId = useId();
+  const inspectorTrigger = useRef<HTMLButtonElement>(null);
+  const shareTrigger = useRef<HTMLButtonElement>(null);
+  const returnInspectorFocus = useRef(false);
+  const returnShareFocus = useRef(false);
+  const publishedBody = useRef<HTMLDivElement>(null);
+  const pageTo = selectedPage ? pagePath(tenant.id, space.id, selectedPage.id) : undefined;
+  const declaredHistory = editor ? editor.historyTo : reading?.historyTo;
+  const historyTo = pageTo && declaredHistory === `${pageTo}/revisions` ? declaredHistory : undefined;
+  const role = tree.accessRole ?? (space.isOwner ? 'owner' : historyTo ? 'edit' : 'read');
+  const canShare = tree.canShare ?? space.isOwner;
+  const revision = editor?.revision ?? reading?.revision;
   const editTo = editor ? null : reading?.editTo;
   const catalogHref = withOptions(spacesPath(tenant.id), options);
   const spaceHref = withOptions(spacePath(tenant.id, space.id), options);
@@ -52,20 +80,60 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
       !pages.length ? 'Нет доступных страниц' : 'Выберите раздел в дереве';
 
   useLayoutEffect(() => {
-    if (!historyOpen && returnHistoryFocus.current) {
-      historyTrigger.current?.focus({preventScroll: true});
-      returnHistoryFocus.current = false;
+    if (!inspectorOpen && returnInspectorFocus.current) {
+      inspectorTrigger.current?.focus({preventScroll: true});
+      returnInspectorFocus.current = false;
     }
-  }, [historyOpen]);
+    if (!shareOpen && returnShareFocus.current) {
+      shareTrigger.current?.focus({preventScroll: true});
+      returnShareFocus.current = false;
+    }
+  }, [inspectorOpen, shareOpen]);
 
-  function dismissHistory() {
-    returnHistoryFocus.current = true;
-    setHistoryOpen(false);
+  useEffect(() => {
+    if (!reading?.revision || role === 'read' || editor) return;
+    const revision = reading.revision;
+    function capture() {
+      const root = publishedBody.current;
+      setSelection(root ? selectedPageAnchor(root, window.getSelection(), revision) : null);
+    }
+    document.addEventListener('selectionchange', capture);
+    return () => document.removeEventListener('selectionchange', capture);
+  }, [reading?.revision, role, editor]);
+
+  useEffect(() => {
+    if (publishedBody.current && reading?.revision) focusLinkedFragment(publishedBody.current, reading.revision);
+  }, [reading?.revision]);
+
+  function dismissInspector() {
+    returnInspectorFocus.current = true;
+    setInspectorOpen(false);
+  }
+
+  function jumpToFragment(fragment: DiscussionAnchor) {
+    const root = publishedBody.current;
+    if (!root) {
+      if (editor && pageTo && revision && fragment.start != null && fragment.end != null) {
+        const url = new URL(pageTo, window.location.origin);
+        url.hash = `fragment-${revision}-${fragment.start}-${fragment.end}`;
+        window.open(url.href, '_blank', 'noopener');
+        return true;
+      }
+      return false;
+    }
+    const range = discussionRange(root, fragment);
+    if (!range) return false;
+    if (window.matchMedia('(max-width: 940px)').matches) setInspectorOpen(false);
+    requestAnimationFrame(() => {
+      root.focus({preventScroll: true});
+      scrollToRange(range);
+    });
+    return true;
   }
 
   return (
-    <main className={`documents-shell${canOpenHistory && historyOpen ? ' documents-shell-history-open' : ''}`}>
-      <aside className="documents-tree" aria-label="Дерево пространства">
+    <main className={`documents-shell${pageOnly ? ' documents-page-only' : ''}${inspectorOpen ? ' documents-inspector-open' : ''}`}>
+      {!pageOnly && <aside className="documents-tree" aria-label="Дерево пространства">
         <span className="documents-tree-title"><Icon name="folder" />{space.name}</span>
         <a href={catalogHref}><Icon name="layers" />Все пространства</a>
         <details open>
@@ -101,9 +169,9 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
             <Icon name="add" />Создать раздел
           </a>
         )}
-      </aside>
+      </aside>}
       <div className="documents-content">
-        <nav className="documents-path" aria-label="Путь">
+        {pageOnly ? <p className="documents-path">Доступ только к этой странице</p> : <nav className="documents-path" aria-label="Путь">
           <a href={catalogHref}>Пространства</a><Icon name="next" />
           {selected ? (
             <>
@@ -116,26 +184,28 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
               ) : <span aria-current="page">{selected.title}</span>}
             </>
           ) : <span>{space.name}</span>}
-        </nav>
+        </nav>}
         <article className="documents-article">
           <header className={`space-heading${publishedCover && publishedCover.value !== 'none' ? ' page-cover-heading' : ''}`}>
             <PageCoverArt cover={publishedCover} />
             <span className="space-icon"><Icon name={selectedPage ? 'file' : 'folder'} /></span>
             <div>
               <h1>{selectedPage?.title ?? selected?.title ?? space.name}</h1>
-              <div className="space-badges">
+              {!pageOnly && <div className="space-badges">
                 <span><Icon name="lock" />Закрытое</span><span>{accessLabel(space)}</span>
-              </div>
+              </div>}
             </div>
           </header>
-          {selectedPage && (editTo || canOpenHistory) && (
+          {pageTo && (
             <div className="document-action-row">
               {editTo && <a className="space-action space-secondary" id="edit-page" href={editTo}>Редактировать</a>}
-              {canOpenHistory && <button type="button" ref={historyTrigger} className="space-action space-secondary"
-                aria-controls={historyOpen ? historyPanelId : undefined} aria-expanded={historyOpen}
-                onClick={() => historyOpen ? dismissHistory() : setHistoryOpen(true)}>
+              <button type="button" ref={inspectorTrigger} className="space-action space-secondary"
+                aria-controls={inspectorId} aria-expanded={inspectorOpen}
+                onClick={() => inspectorOpen ? dismissInspector() : setInspectorOpen(true)}>
                 <Icon name="context" />Контекст страницы
-              </button>}
+              </button>
+              {canShare && <button className="space-action primary-action" type="button" ref={shareTrigger}
+                aria-haspopup="dialog" onClick={() => setShareOpen(true)}>Поделиться</button>}
             </div>
           )}
           {selectedPage ? (
@@ -143,10 +213,19 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
               <>
                 {reading?.renderedHtml ? (
                   // The server supplies this fragment from its allowlisted Markdown renderer.
-                  <div className="document-text document-markdown" dangerouslySetInnerHTML={{__html: reading.renderedHtml}} />
+                  <div ref={publishedBody} tabIndex={-1} className="document-text document-markdown"
+                    dangerouslySetInnerHTML={{__html: reading.renderedHtml}} />
                 ) : reading?.renderedHtml === null && reading.text ? (
-                  <div className="document-text">{reading.text}</div>
+                  <div ref={publishedBody} tabIndex={-1} className="document-text">{reading.text}</div>
                 ) : <p className="document-empty">Пока здесь ничего нет.</p>}
+                {selection && <button type="button" className="space-action space-secondary selection-comment"
+                  onPointerDown={event => event.preventDefault()} onClick={() => {
+                    setAnchor(selection);
+                    setInspectorTab('comments');
+                    setInspectorOpen(true);
+                    setSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }}><Icon name="quote" />Прокомментировать выделение</button>}
                 {reading?.attachments && <PageAttachmentList files={reading.attachments} />}
               </>
             )
@@ -178,16 +257,34 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
           )}
         </article>
       </div>
-      {canOpenHistory && historyOpen && <PageHistoryPanel key={historyTo} id={historyPanelId} historyTo={historyTo}
-        editing={Boolean(editor)} onDismiss={dismissHistory} />}
+      {pageTo && selectedPage && <PageInspector id={inspectorId} pageTo={pageTo} title={selectedPage.title}
+        role={role} revision={revision} pageOnly={Boolean(pageOnly)} historyTo={historyTo}
+        open={inspectorOpen} tab={inspectorTab} onTab={setInspectorTab} onDismiss={dismissInspector}
+        editing={Boolean(editor)} anchor={anchor} onClearAnchor={() => setAnchor(null)}
+        onJump={jumpToFragment} reference={reference} />}
+      {pageTo && selectedPage && shareOpen && <PageSharingDialog pageTo={pageTo} title={selectedPage.title} onDismiss={() => {
+        returnShareFocus.current = true;
+        setShareOpen(false);
+      }} />}
     </main>
   );
+}
+
+function RequestPageAccess({to, initialSent}: {to: string; initialSent?: boolean}) {
+  const [sent, setSent] = useState(Boolean(initialSent));
+  const command = usePageCommand(to, () => setSent(true));
+  return <div className="page-request-access">
+    {sent ? <p role="status">Запрос принят к обработке.</p> :
+      <button type="button" className="space-action primary-action" disabled={command.busy}
+        onClick={() => void command.send({action: 'request'})}>Запросить доступ</button>}
+    {command.error && <p className="form-error" role="alert">{command.error}</p>}
+  </div>;
 }
 
 const missingResourceTitles = {
   spaceNotFound: 'Пространство не найдено',
   sectionNotFound: 'Раздел не найден',
-  pageNotFound: 'Страница не найдена',
+  pageNotFound: 'Страница недоступна',
 };
 
 function WorkspaceError({page}: {
@@ -209,6 +306,8 @@ function WorkspaceError({page}: {
             <span className="space-icon"><Icon name="lock" /></span>
             <h1>{missingResourceTitles[page.kind]}</h1>
             <p className="space-summary">Проверьте адрес или вернитесь в рабочую область.</p>
+            {page.kind === 'pageNotFound' && page.requestTo &&
+              <RequestPageAccess to={page.requestTo} initialSent={page.requestSent} />}
             <a className="space-action space-secondary" href="/workspace"><Icon name="back" />К рабочей области</a>
           </section>
         )}
@@ -234,7 +333,10 @@ export function WorkspacePage({page}: {page: WorkspacePageModel}) {
     const {workspace, space, tree} = page;
     return (
       <>
-        <WorkspaceHeader workspace={workspace} space={space} />
+        {tree.pageOnly ? <header className="workspace-topbar page-only-topbar">
+          <span className="dock-tenant"><Icon />Север</span>
+          <PageNotifications />
+        </header> : <WorkspaceHeader workspace={workspace} space={space} />}
         <Documents workspace={workspace} space={space} tree={tree} />
         {tree.form && <DocumentCreationDialog kind="section" form={tree.form} parentName={space.name} />}
         {tree.pageForm && tree.selected && (

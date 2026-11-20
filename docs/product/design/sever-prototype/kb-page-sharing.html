@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Север · Доступ к странице и комментарии</title>
+  <link rel="stylesheet" href="../graph.css">
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="page-sharing.css">
+  <script type="module" src="page-sharing.mjs"></script>
+</head>
+<body class="workspace-shell sharing-demo" data-graph-theme="dark">
+  <header class="sharing-top">
+    <div class="sharing-dock" id="dock-name"></div>
+    <div class="sharing-demo-controls">
+      <button class="btn ghost" type="button" data-action="notifications" id="notification-control">Уведомления</button>
+      <label for="perspective">Роль в макете</label>
+      <select class="field compact" id="perspective">
+        <option value="owner">Владелец</option>
+        <option value="daria">Комментатор</option>
+        <option value="alex">Читатель</option>
+        <option value="guest">Приглашённый гость</option>
+        <option value="public">По публичной ссылке</option>
+        <option value="none">Без доступа</option>
+      </select>
+    </div>
+  </header>
+  <main class="sharing-workspace" id="workspace">
+    <aside class="sidebar sharing-tree" id="tree" aria-label="Дерево пространства"></aside>
+    <section class="doc-center" id="document" aria-label="Страница"></section>
+    <aside class="sharing-inspector" id="inspector" aria-label="Контекст страницы" hidden></aside>
+  </main>
+  <dialog class="workspace-dialog sharing-mobile" id="mobile-inspector" aria-label="Контекст страницы"></dialog>
+  <dialog class="workspace-dialog sharing-dialog" id="sharing-dialog" aria-labelledby="sharing-title"></dialog>
+  <p class="sharing-notice" id="notice" role="status" hidden></p>
+</body>
+</html>

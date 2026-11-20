@@ -12,7 +12,7 @@ pub(crate) use client::{BUNDLE as UI_BUNDLE, BUNDLE_PATH as UI_BUNDLE_PATH};
 pub(crate) use editor::page_edit_retry;
 pub(crate) use sections::{page_retry, section_retry};
 pub(crate) use workspace::{
-    catalog, catalog_unavailable, closed_space, create_space, documents_unavailable,
+    catalog, catalog_unavailable, closed_space, create_space, documents_unavailable, page_denied,
     page_not_found, section_not_found, space_not_found,
 };
 

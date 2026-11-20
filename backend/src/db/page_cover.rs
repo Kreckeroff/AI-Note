@@ -8,8 +8,7 @@ use crate::cover_image::CoverImage;
 
 use super::{
     Store,
-    page_access::{PageAddress, PageEditAccess, lock_page_for_edit},
-    sections::SPACE_ACCESS,
+    page_access::{PAGE_ACCESS, PageAddress, PageEditAccess, lock_page_for_edit},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,15 +126,15 @@ impl Store {
     ) -> Result<Option<Vec<u8>>, sqlx::Error> {
         let query = format!(
             "SELECT a.jpeg
-             FROM ({SPACE_ACCESS}) access
+             FROM ({PAGE_ACCESS}) access
              JOIN page_cover_assets a
                ON (a.tenant_id, a.space_id, a.page_id, a.id) = ($1, $2, $4, $5)
              LEFT JOIN page_covers c
                ON (c.tenant_id, c.space_id, c.page_id) = ($1, $2, $4)
-             WHERE (c.asset_id = a.id AND a.published_at IS NOT NULL) OR (
-                 a.published_at IS NULL AND a.uploader_account_id = $3 AND access.can_create
+             WHERE access.can_read AND ((c.asset_id = a.id AND a.published_at IS NOT NULL) OR (
+                 a.published_at IS NULL AND a.uploader_account_id = $3 AND access.can_edit
                  AND a.staged_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'
-             )"
+             ))"
         );
         sqlx::query_scalar(&query)
             .bind(address.tenant)

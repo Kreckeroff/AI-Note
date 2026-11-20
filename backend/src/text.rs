@@ -36,6 +36,17 @@ pub(crate) fn fold_name(value: &str) -> String {
         .collect()
 }
 
+pub(crate) fn revision_number(value: &str) -> Option<i64> {
+    if value
+        .as_bytes()
+        .first()
+        .is_none_or(|first| !matches!(first, b'1'..=b'9'))
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
 pub(crate) fn normalize_line_endings(text: &str) -> Cow<'_, str> {
     if text.contains('\r') {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))

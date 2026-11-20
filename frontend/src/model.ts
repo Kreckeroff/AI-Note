@@ -1,3 +1,4 @@
+import {isPageAddress, type EffectiveRole} from './collaboration/api';
 import {isCoverUploadPath, isCoverValue, isCoverView, type CoverValue, type CoverView} from './editor/pageCover';
 import {isPageHistoryPath} from './editor/pageHistory';
 import {isAttachmentId, isAttachmentUploadPath, isPageAttachment, type PageAttachment} from './editor/pageAttachments';
@@ -66,6 +67,7 @@ export interface DocumentFormModel {
 }
 
 export interface PageReadingModel {
+  revision?: string;
   text: string;
   editTo: string | null;
   renderedHtml: string | null;
@@ -108,6 +110,9 @@ export interface PageEditorForm extends PageRevision {
 }
 
 export interface SectionTreeModel {
+  pageOnly?: boolean;
+  canShare?: boolean;
+  accessRole?: EffectiveRole;
   sections: Section[];
   selected: Section | null;
   canCreateSection: boolean;
@@ -145,7 +150,7 @@ export type WorkspacePageModel =
   | {kind: 'closedSpace'; workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}
   | {kind: 'spaceNotFound'}
   | {kind: 'sectionNotFound'}
-  | {kind: 'pageNotFound'}
+  | {kind: 'pageNotFound'; requestTo?: string; requestSent?: boolean}
   | CreationPageModel;
 
 export type PageModel = AccountPageModel | WorkspacePageModel;
@@ -220,6 +225,7 @@ function isDocumentForm(value: unknown): boolean {
 
 function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
+    (value.revision == null || typeof value.revision === 'string' && /^[0-9]{1,19}$/u.test(value.revision)) &&
     (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
     (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover) &&
     (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
@@ -263,7 +269,10 @@ function isSectionTree(value: unknown): boolean {
   if (!fields(value)) return false;
   const hasSelectedSection = isSection(value.selected);
   const hasSelectedPage = hasSelectedSection && isDocumentPage(value.selectedPage);
-  return isList(value.sections, isSection) && (value.selected === null || hasSelectedSection) &&
+  return (value.pageOnly == null || typeof value.pageOnly === 'boolean') &&
+    (value.canShare == null || typeof value.canShare === 'boolean') &&
+    (value.accessRole == null || ['owner', 'edit', 'read', 'comment'].includes(String(value.accessRole))) &&
+    isList(value.sections, isSection) && (value.selected === null || hasSelectedSection) &&
     typeof value.canCreateSection === 'boolean' && (value.form === null || value.canCreateSection && isDocumentForm(value.form)) &&
     isList(value.pages, isDocumentPage) && (value.selectedPage === null || hasSelectedPage) &&
     typeof value.canCreatePage === 'boolean' &&
@@ -282,8 +291,11 @@ function isPage(value: unknown): value is PageModel {
     case 'registrationRequested':
     case 'spaceNotFound':
     case 'sectionNotFound':
-    case 'pageNotFound':
       return true;
+    case 'pageNotFound':
+      return (value.requestTo == null || typeof value.requestTo === 'string' &&
+        value.requestTo.endsWith('/sharing') && isPageAddress(value.requestTo.slice(0, -8))) &&
+        (value.requestSent == null || typeof value.requestSent === 'boolean');
     case 'registrationComplete':
       return strings(value, 'token', 'name', 'error');
     case 'noTenant':

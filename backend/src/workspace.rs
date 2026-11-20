@@ -434,16 +434,7 @@ pub(crate) fn canonical_uuid(value: &str) -> Option<Uuid> {
     (value == id.to_string()).then_some(id)
 }
 
-pub(crate) fn revision_number(value: &str) -> Option<i64> {
-    if value
-        .as_bytes()
-        .first()
-        .is_none_or(|first| !matches!(first, b'1'..=b'9'))
-    {
-        return None;
-    }
-    value.parse().ok()
-}
+pub(crate) use crate::text::revision_number;
 
 pub(crate) fn spaces_path(tenant: Uuid) -> String {
     format!("{WORKSPACE_PATH}/{tenant}/spaces")
@@ -573,6 +564,21 @@ pub(crate) fn local_target(target: &str) -> String {
             target: DocumentsTarget::History { target, .. },
             ..
         }) => history_return_to(path, query, target),
+        Route::Documents(DocumentsRoute {
+            target: DocumentsTarget::Page(_),
+            ..
+        }) => {
+            let params = crate::http::Form::from_query(query);
+            let mut destination = with_options(path, &options);
+            if let Some(thread) = canonical_uuid(params.get("thread")) {
+                let separator = if destination.contains('?') { '&' } else { '?' };
+                destination.push_str(&format!("{separator}thread={thread}"));
+                if let Some(comment) = canonical_uuid(params.get("comment")) {
+                    destination.push_str(&format!("&comment={comment}"));
+                }
+            }
+            destination
+        }
         _ => with_options(path, &options),
     };
     if destination.len() > 1400 {
@@ -600,6 +606,11 @@ fn history_return_to(path: &str, query: &str, target: HistoryTarget) -> String {
         query.append_pair("preview", "1");
     } else if matches!(target, HistoryTarget::Revision(_)) && form.get("restore") == "1" {
         query.append_pair("restore", "1");
+    }
+    if matches!(target, HistoryTarget::Revision(_))
+        && let Some(comment) = canonical_uuid(form.get("comment"))
+    {
+        query.append_pair("comment", &comment.to_string());
     }
     let query = query.finish();
     if query.is_empty() {

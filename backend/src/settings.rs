@@ -8,9 +8,12 @@ pub(crate) struct TenantSettings {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TenantSetting {
     pub(crate) id: Uuid,
     pub(crate) name: String,
+    pub(crate) allow_guests: Option<bool>,
+    pub(crate) allow_public_links: Option<bool>,
 }
 
 #[derive(Deserialize)]

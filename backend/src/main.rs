@@ -1,9 +1,14 @@
 mod admin;
+mod clock;
 mod cover_image;
 mod db;
+mod external_sharing;
 mod http;
 mod identity;
 mod markdown;
+mod page_discussion_http;
+mod page_sharing_http;
+mod page_social_route;
 mod registration;
 mod sections;
 mod sections_http;

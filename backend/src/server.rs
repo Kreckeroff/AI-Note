@@ -14,8 +14,10 @@ use tokio::net::TcpListener;
 
 use crate::{
     db::Store,
+    external_sharing::{SharingDelivery, private_address, sharing_error},
     http::{self, Form, FormError, html, plain, redirect},
     identity::{self, Identity, LoginOutcome},
+    page_social_route::{self, SocialRoute},
     registration::Registration,
     sections_http, views,
     workspace::{
@@ -28,6 +30,7 @@ struct Server {
     store: Store,
     identity: Identity,
     registration: Option<Registration>,
+    sharing: SharingDelivery,
     host: String,
     origin: String,
 }
@@ -39,6 +42,7 @@ pub(crate) async fn run(
     public_host: &str,
 ) -> anyhow::Result<()> {
     let registration = Registration::from_env()?;
+    let sharing = SharingDelivery::from_env()?;
     store.check_schema().await?;
     let listener = TcpListener::bind(SocketAddrV4::new(bind_addr, port)).await?;
     let host = format!("{public_host}:{}", listener.local_addr()?.port());
@@ -50,6 +54,7 @@ pub(crate) async fn run(
         store,
         identity: Identity::new(),
         registration,
+        sharing,
         host,
         origin,
     });
@@ -102,6 +107,9 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                     .path_and_query()
                     .map_or("", |part| part.as_str()),
             );
+            let social = SocialRoute::parse(request.uri().path());
+            let social_api = social.as_ref().is_some_and(SocialRoute::is_api);
+            let private_route = social.is_some() && !social_api;
             let route = Route::parse(request.uri().path());
             let history_target = route.and_then(Route::history_target);
             let history_json = history_target == Some(HistoryTarget::List)
@@ -119,7 +127,17 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                         Err(_) => eprintln!("request.failed category=timeout"),
                         Ok(Ok(_)) => unreachable!(),
                     }
-                    if route.is_some_and(Route::is_cover) {
+                    if social_api {
+                        sharing_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Не удалось выполнить действие. Попробуйте снова.",
+                        )
+                    } else if private_route {
+                        private_address(plain(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Не удалось открыть ссылку. Попробуйте снова.",
+                        ))
+                    } else if route.is_some_and(Route::is_cover) {
                         sections_http::cover_unavailable(is_read)
                     } else if route.is_some_and(Route::is_attachment) {
                         sections_http::attachment_unavailable(is_read)
@@ -174,6 +192,16 @@ fn database_error_kind(error: &sqlx::Error) -> &'static str {
 impl Server {
     async fn handle(&self, request: Request) -> Result<Response, sqlx::Error> {
         let path = request.uri().path();
+        if SocialRoute::parse(path).is_some() {
+            return page_social_route::handle(
+                &self.store,
+                &self.identity,
+                &self.sharing,
+                &self.origin,
+                request,
+            )
+            .await;
+        }
         if matches!(path, "/register" | "/register/confirm") {
             return if let Some(registration) = &self.registration {
                 registration
@@ -465,6 +493,7 @@ mod tests {
             store: store.clone(),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -604,6 +633,7 @@ mod tests {
             store,
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -903,6 +933,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -933,6 +964,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -969,6 +1001,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1028,6 +1061,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1071,6 +1105,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1138,6 +1173,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1281,6 +1317,7 @@ mod tests {
             store: Store::from_test_pool(pool),
             identity: Identity::new(),
             registration: None,
+            sharing: SharingDelivery::disabled(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });

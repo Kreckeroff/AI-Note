@@ -3,8 +3,9 @@ use uuid::Uuid;
 
 use super::{
     Attachment, PageAddress, PageContentFormat, PageCover, Store,
+    page_access::PAGE_ACCESS,
     page_attachments::{REVISION_ATTACHMENTS, decode_attachments, record_snapshot_attachments},
-    sections::{SPACE_ACCESS, decode_title},
+    sections::decode_title,
 };
 
 mod restore;
@@ -16,9 +17,9 @@ const PAGE_SIZE: usize = 20;
 fn scoped(statement: &str) -> String {
     format!(
         "WITH editable_page AS (
-             SELECT p.content_revision FROM ({SPACE_ACCESS}) access
+             SELECT p.content_revision FROM ({PAGE_ACCESS}) access
              JOIN pages p ON (p.tenant_id, p.space_id, p.id) = ($1, $2, $4)
-             WHERE access.can_create
+             WHERE access.can_edit
          )
          {statement}"
     )

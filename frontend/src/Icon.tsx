@@ -23,6 +23,7 @@ const paths = {
   table: 'M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16',
   clipboard: 'M8 5H5v16h14V5h-3 M8 3h8v5H8z M8 12h8m-8 4h5',
   context: 'M3 4h18v16H3z M14 4v16 M17 8h1 M17 12h1',
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4',
   history: 'M4 11a8 8 0 1 1 2 6 M4 6v5h5 M12 8v4l3 2',
 };
 

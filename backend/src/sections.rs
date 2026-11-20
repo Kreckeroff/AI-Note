@@ -12,6 +12,9 @@ pub(crate) struct SectionScreen {
     pub pages: Vec<Page>,
     pub selected: Option<Section>,
     pub selected_page: Option<Page>,
+    pub page_only: bool,
+    pub can_share: bool,
+    pub access_role: Option<String>,
     pub can_create_section: bool,
     pub form: Option<NameForm>,
     pub page_form: Option<NameForm>,
@@ -22,6 +25,7 @@ pub(crate) struct SectionScreen {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PageReading {
+    pub revision: String,
     pub text: String,
     pub rendered_html: Option<RenderedMarkdown>,
     pub edit_to: Option<String>,

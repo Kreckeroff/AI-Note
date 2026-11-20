@@ -381,6 +381,40 @@ fn workspace_unavailable(
 }
 
 pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &SectionScreen) -> String {
+    if tree.page_only
+        && let Some(document) = &tree.selected_page
+    {
+        let cover = tree.reading.as_ref().map_or_else(String::new, |reading| {
+            super::editor::cover_art(&reading.cover)
+        });
+        let cover_class = if cover.is_empty() {
+            ""
+        } else {
+            " page-cover-heading"
+        };
+        return page(
+            &document.title,
+            &format!(
+                r#"<header class="workspace-topbar"><div class="workspace-dock"><span class="dock-tenant">{NORTH_ICON}Север</span></div></header>
+<main class="space-shell page-only-shell"><article class="documents-article">
+<header class="space-heading{cover_class}">{cover}<span class="space-icon">{document_icon}</span><h1>{title}</h1></header>
+{contents}
+</article></main>"#,
+                document_icon = icon("file"),
+                title = html(&document.title),
+                contents = super::editor::page_contents(tree),
+            ),
+            PageAssets::Workspace {
+                menu: false,
+                form: false,
+            },
+            ClientPage::ClosedSpace {
+                workspace: ctx,
+                space,
+                tree,
+            },
+        );
+    }
     let options = &ctx.catalog.options;
     let catalog_href = with_options(&spaces_path(ctx.tenant.id), options);
     let name = html(&space.name);
@@ -538,7 +572,46 @@ pub(crate) fn section_not_found() -> String {
 }
 
 pub(crate) fn page_not_found() -> String {
-    not_found("Страница не найдена", ClientPage::PageNotFound)
+    page_denied(None, false)
+}
+
+pub(crate) fn page_denied(request_to: Option<&str>, request_sent: bool) -> String {
+    let title = "Страница не найдена";
+    let model = ClientPage::PageNotFound {
+        request_to,
+        request_sent,
+    };
+    let Some(target) = request_to else {
+        return not_found(title, model);
+    };
+    let action = if request_sent {
+        r#"<p class="space-summary" role="status">Запрос принят к обработке.</p>"#.to_owned()
+    } else {
+        format!(
+            r#"<form method="post" action="{}">
+<input type="hidden" name="action" value="request">
+<input type="hidden" name="operation_id" value="{}">
+<button type="submit" class="space-action primary-action">Запросить доступ</button>
+</form>"#,
+            html(target),
+            Uuid::new_v4()
+        )
+    };
+    workspace_frame(
+        title,
+        None,
+        None,
+        &format!(
+            r#"<section class="space-denied"><span class="space-icon">{lock}</span>
+<h1>{title}</h1><p class="space-summary">Проверьте адрес или запросите доступ.</p>
+{action}<a class="space-action space-secondary" href="{WORKSPACE_PATH}">{back}К рабочей области</a>
+</section>"#,
+            lock = icon("lock"),
+            back = icon("back")
+        ),
+        "",
+        model,
+    )
 }
 
 fn not_found(title: &str, model: ClientPage<'_>) -> String {
@@ -701,6 +774,9 @@ mod tests {
             pages: Vec::new(),
             selected: Some(selected),
             selected_page: None,
+            page_only: false,
+            can_share: false,
+            access_role: None,
             can_create_section: false,
             form: None,
             page_form: None,

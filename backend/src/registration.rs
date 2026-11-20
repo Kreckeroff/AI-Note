@@ -38,34 +38,61 @@ const RESTART_REGISTRATION: &str = "Ссылка недействительна.
 const OPEN_REGISTRATION: &str = "Откройте форму регистрации в «Север».";
 
 #[derive(Clone)]
-struct MailDelivery {
+pub(crate) struct MailDelivery {
     executable: PathBuf,
     from: String,
 }
 
 impl MailDelivery {
     fn from_env() -> AnyResult<Self> {
-        let executable =
-            PathBuf::from(env::var_os("SEVER_REGISTRATION_SENDMAIL").unwrap_or_default());
+        Self::configured("SEVER_REGISTRATION_SENDMAIL", "SEVER_REGISTRATION_FROM")
+    }
+
+    pub(crate) fn configured(executable_var: &str, from_var: &str) -> AnyResult<Self> {
+        let executable = PathBuf::from(env::var_os(executable_var).unwrap_or_default());
         if !is_executable(&executable) {
-            bail!("В SEVER_REGISTRATION_SENDMAIL укажите абсолютный путь к исполняемому sendmail.");
+            bail!("В {executable_var} укажите абсолютный путь к исполняемому sendmail.");
         }
-        let from = env::var("SEVER_REGISTRATION_FROM").unwrap_or_default();
-        let from = normalize_email(&from).ok_or_else(|| {
-            anyhow!("В SEVER_REGISTRATION_FROM укажите действительный адрес отправителя.")
-        })?;
+        let from = env::var(from_var).unwrap_or_default();
+        let from = normalize_email(&from)
+            .ok_or_else(|| anyhow!("В {from_var} укажите действительный адрес отправителя."))?;
         Ok(Self { executable, from })
     }
 
     async fn send(&self, email: &str, link: &str) -> io::Result<()> {
-        let subject = STANDARD.encode("Подтвердите почту для регистрации в «Севере»");
-        let message = format!(
-            "From: <{}>\nTo: <{email}>\nSubject: =?UTF-8?B?{subject}?=\n\
-             MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\
-             Content-Transfer-Encoding: 8bit\n\n\
-             Чтобы завершить регистрацию в «Севере», откройте ссылку на компьютере, где запущено приложение.\n\
+        let body = format!(
+            "Чтобы завершить регистрацию в «Север», откройте ссылку на компьютере, где запущено приложение.\n\
              {link}\nСрок действия ссылки — {CONFIRMATION_LIFETIME_MINUTES} мин. Если вы не запрашивали регистрацию, письмо можно проигнорировать.\n",
-            self.from
+        );
+        self.send_message(
+            email,
+            "Подтвердите почту для регистрации в «Севере»",
+            &body,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_message(
+        &self,
+        email: &str,
+        subject: &str,
+        body: &str,
+        message_id: Option<uuid::Uuid>,
+    ) -> io::Result<()> {
+        let subject = STANDARD.encode(subject);
+        let message_id = message_id.map_or_else(String::new, |id| {
+            let domain = self
+                .from
+                .rsplit_once('@')
+                .map_or("localhost", |(_, domain)| domain);
+            format!("Message-ID: <{id}@{domain}>\n")
+        });
+        let message = format!(
+            "From: <{}>\nTo: <{email}>\nSubject: =?UTF-8?B?{subject}?=\n{message_id}\
+             MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\
+             Content-Transfer-Encoding: 8bit\n\n{body}",
+            self.from,
         );
         let mut child = Command::new(&self.executable)
             .args(["-i", "-t"])
