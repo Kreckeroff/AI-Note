@@ -1,6 +1,15 @@
-import {useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
+import {useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
 import {flushSync} from 'react-dom';
 import {Icon} from './Icon';
+import {newOperationId} from './collaboration/api';
+import {
+  draftSplice, liftPrivateMediaWithSteps, projectPrivateMedia, projectPrivateMediaSplice,
+  selectionAfterSplice, spliceAtSelection, type DraftText, type TextSplice,
+} from './collaboration/draftSplice';
+import {readPublishedPage} from './collaboration/publishedPage';
+import {rebaseSharedHistory} from './collaboration/sharedDraftHistory';
+import {sharedDraftStatus, SharedDraftRecovery} from './collaboration/SharedDraftStatus';
+import {useSharedDraft} from './collaboration/useSharedDraft';
 import {coverLabel, CoverConflictOptions, CoverGallery, PageCoverArt} from './editor/CoverGallery';
 import {DraftDialogs, type DialogValue} from './editor/DraftDialogs';
 import {createDraftHistory, type DraftEditKind, type DraftFrame, type DraftHistoryDirection} from './editor/draftHistory';
@@ -48,7 +57,7 @@ function moveToolbarFocus(event: KeyboardEvent<HTMLDivElement>) {
   buttons[next]?.focus();
 }
 
-export function PageEditor({form}: {form: PageEditorForm}) {
+export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm; pageTo?: string; onAccessEnded?(): void}) {
   const {action, cancelTo, revision, error, conflict, canSave} = form;
   const [draft, setDraft] = useState<EditorDraft>(() => ({
     source: form.source, contentFormat: form.contentFormat, textBase: form.textBase,
@@ -65,6 +74,9 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     changed: form.coverChanged ?? false,
   }));
   const [coverChoice, setCoverChoice] = useState<CoverChoice | null>(null);
+  const [publishedMedia,setPublishedMedia] = useState<{revision:string;cover:CoverView}>();
+  const [placement,setPlacement] = useState<{text:DraftText;previous:string}>();
+  const [placementCopy,setPlacementCopy] = useState<string>();
   const [coverOpen, setCoverOpen] = useState(false);
   const coverButton = useRef<HTMLButtonElement>(null);
   const [dialog, setDialog] = useState<DialogRequest>();
@@ -78,11 +90,32 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const rawBeforeInput = useRef<SourceRange | undefined>(undefined);
   const composing = useRef<EditorFrame | undefined>(undefined);
   const submitting = useRef(false);
+  const currentDraft = useRef(draft);
+  const richComposing = useRef(false);
+  const sharedPath = canSave && !form.coeditRetry ? pageTo : undefined;
+  const shared = useSharedDraft(sharedPath, form.error || conflict ? projectPrivateMedia({
+    source:form.source, format:form.contentFormat,
+  }, form.attachmentAdded ?? []).text : undefined, receiveSharedDraft, () => {
+    if (onAccessEnded) onAccessEnded();
+    else if (sharedPath) window.location.replace(sharedPath);
+  });
+  const sharedState = shared.state;
+  const confirmed = sharedState?.snapshot;
+  const sharedReady = sharedState?.status === 'ready' && sharedState.pending === 0;
+  const publishOperation = useMemo(() => newOperationId(), [confirmed?.version, coverDraft, coverChoice, draft.attachments]);
+  const publishGuard = form.coeditRetry ?? (confirmed ? {
+    version:confirmed.version,lease:confirmed.lease,operation:publishOperation,
+  } : undefined);
   const sourceMode = editorMode === 'source';
   const visibleError = clientError || error;
   const describedBy = visibleError ? 'page-editor-error' : undefined;
-  const readOnly = !canSave || saving;
-  const cover = resolveCoverDraft(coverDraft, conflict?.cover, coverChoice, rebase);
+  const readOnly = !canSave || saving || Boolean(form.coeditRetry || placement) || Boolean(sharedState &&
+    (['opening','expired','recover','rejected'].includes(sharedState.status) ||
+    !confirmed));
+  const publishedCover = publishedMedia?.cover ?? conflict?.cover;
+  const mediaReloading = Boolean(confirmed && confirmed.publishedRevision!==form.revision &&
+    publishedMedia?.revision!==confirmed.publishedRevision);
+  const cover = resolveCoverDraft(coverDraft,publishedCover,coverChoice,rebase || Boolean(publishedMedia));
   const hasCover = Boolean(cover.preview && cover.preview.value !== 'none');
   const showCover = hasCover || canSave && (form.cover !== undefined || form.coverUploadTo != null);
   const coverConflictPending = cover.requiresChoice && coverChoice === null;
@@ -90,6 +123,78 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   const attachments = draft.attachments;
   const changedAttachments = attachments.added.length + attachments.removed.length > 0;
   const textStillUnchanged = draft.textBase && form.textUnchanged && draft.source === form.source && draft.contentFormat === form.contentFormat;
+
+  function replaceDraft(next: EditorDraft) {
+    currentDraft.current = next;
+    setDraft(next);
+  }
+
+  function mediaProjection(value: EditorDraft) {
+    return projectPrivateMedia({source:value.source,format:value.contentFormat},value.attachments.added);
+  }
+
+  function scopedText(value: EditorDraft): DraftText {
+    return mediaProjection(value).text;
+  }
+
+  function receiveSharedDraft(text: DraftText, steps?: TextSplice[]) {
+    const current = currentDraft.current;
+    const restored=liftPrivateMediaWithSteps(mediaProjection(current),text,current.attachments.added,steps);
+    if (!restored) {
+      shared.transport.current?.setPaused(true);
+      setPlacement({text,previous:current.source});
+      return;
+    }
+    const {text:ui,steps:exact}=restored;
+    if (exact?.length) rebaseSharedHistory(history,current.source,exact);
+    if (!exact?.length && ui.source===current.source && ui.format===current.contentFormat) return;
+    if (document.activeElement?.id === 'page-text') {
+      focusRange.current = (exact ?? [draftSplice(current.source,ui.source)]).reduce(selectionAfterSplice,selection());
+    }
+    replaceDraft({...current, source:ui.source,contentFormat:ui.format,textBase:null});
+  }
+
+  function updateSharedPause() {
+    shared.transport.current?.setPaused(Boolean(composing.current || richComposing.current ||
+      dialog || attachmentDialog || coverOpen || placement || submitting.current));
+  }
+
+  useEffect(() => {
+    updateSharedPause();
+  }, [dialog, attachmentDialog, coverOpen, placement, saving]);
+
+  useEffect(() => {
+    if (!sharedPath || !confirmed?.publishedRevision || confirmed.publishedRevision === form.revision) return;
+    const request = new AbortController();
+    const expected=confirmed.publishedRevision;
+    let retry: number | undefined;
+    async function updateMedia() {
+      try {
+        const publication=await readPublishedPage(sharedPath!,request.signal);
+        if (request.signal.aborted) return;
+        const latest=publication?.reading;
+        if (latest?.revision===expected) {
+          const current=currentDraft.current;
+          const added=new Set(current.attachments.added);
+          const removed=new Set(current.attachments.removed);
+          const retained=(latest.attachments ?? []).filter(file => !removed.has(file.id) && !added.has(file.id));
+          const staged=current.attachments.files.filter(file => added.has(file.id));
+          replaceDraft({...current,attachments:{...current.attachments,files:[...retained,...staged]}});
+          setPublishedMedia({revision:expected,cover:latest.cover ?? {value:'none',imageTo:null}});
+          setCoverChoice(null);
+          return;
+        }
+      } catch {
+        // Keep staged media and the previous cover preview while retrying.
+      }
+      if (!request.signal.aborted) retry=window.setTimeout(updateMedia,2500);
+    }
+    void updateMedia();
+    return () => {
+      request.abort();
+      if (retry !== undefined) window.clearTimeout(retry);
+    };
+  }, [sharedPath, confirmed?.publishedRevision, form.revision]);
 
   function restoreSelection(range?: SourceRange) {
     if (sourceMode) {
@@ -104,7 +209,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     if (dialog || attachmentDialog || !focusRange.current) return;
     restoreSelection(focusRange.current);
     focusRange.current = undefined;
-  }, [dialog, attachmentDialog, sourceMode]);
+  }, [dialog, attachmentDialog, sourceMode, draft]);
 
   useLayoutEffect(() => { restoreSelection(); }, []);
 
@@ -119,19 +224,33 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   }, []);
 
   function record(next: typeof draft, before: SourceRange, after: SourceRange, kind: DraftEditKind, previous = draft) {
-    if (!canSave || submitting.current) return;
-    history.record({...previous, selection: before}, {...next, selection: after}, kind);
-    setDraft(next);
+    if (readOnly || submitting.current) return false;
+    const authored=spliceAtSelection(previous.source,next.source,before,after);
+    const nextShared=scopedText(next);
+    const exact=projectPrivateMediaSplice(mediaProjection(previous),nextShared,authored);
+    if (shared.transport.current?.edit(nextShared,exact)===false) {
+      replaceDraft(previous);
+      setClientError('Совместите выделенный фрагмент перед его изменением.');
+      if (input.current) {
+        input.current.value=previous.source;
+        input.current.setSelectionRange(before.start,before.end);
+      }
+      return false;
+    }
+    history.record({...previous, selection: before}, {...next, selection: after},
+      sharedState ? 'atomic' : kind,Date.now(),sharedState ? authored : undefined);
+    replaceDraft(next);
     setClientError('');
+    return true;
   }
 
   function applyEdit(change: EditorChange, before: SourceRange, kind: DraftEditKind = 'atomic') {
-    record({...draft, source: change.source, contentFormat: change.legacy ? 'literal' : 'markdown'}, before,
+    return record({...draft, source: change.source, contentFormat: change.legacy ? 'literal' : 'markdown'}, before,
       {start: change.start, end: change.end}, kind);
   }
 
   function sourceDraft(source: string): typeof draft {
-    return source === draft.source ? draft : {...draft, source, contentFormat: source === form.source ? form.contentFormat : 'markdown'};
+    return source === draft.source ? draft : {...draft, source, contentFormat: sharedState?.conflict?.persistent ? draft.contentFormat : source === form.source ? form.contentFormat : 'markdown'};
   }
 
   function selection(): SourceRange {
@@ -141,10 +260,25 @@ export function PageEditor({form}: {form: PageEditorForm}) {
 
   function stepHistory(direction: DraftHistoryDirection) {
     if (!canSave || submitting.current || composing.current) return;
-    const frame = history.step(direction);
+    if (readOnly) return;
+    const frame = history.step(direction, sharedState ? (from,to,span,blocked) => {
+      const current=currentDraft.current;
+      if (blocked || from.source!==current.source || from.contentFormat!==current.contentFormat) {
+        setClientError('Коллега изменил этот фрагмент. Совместите правки перед отменой.');
+        return;
+      }
+      const next={...to,attachments:from.attachments===to.attachments ? current.attachments : to.attachments};
+      const nextShared=scopedText(next);
+      const exact=span && projectPrivateMediaSplice(mediaProjection(current),nextShared,span);
+      if (shared.transport.current?.edit(nextShared,exact)===false) {
+        setClientError('Совместите выделенный фрагмент перед отменой.');
+        return;
+      }
+      return next;
+    } : undefined);
     if (!frame) return;
     flushSync(() => {
-      setDraft({source: frame.source, contentFormat: frame.contentFormat, attachments: frame.attachments, textBase: frame.textBase});
+      replaceDraft({source:frame.source,contentFormat:frame.contentFormat,attachments:frame.attachments,textBase:frame.textBase});
       setClientError('');
     });
     restoreSelection(frame.selection);
@@ -201,14 +335,14 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     const change = value.kind === 'link' ? applyLink(source, legacy, range, value.label, value.address)
       : pasteMarkdown(source, legacy, range, value.text);
     if (change.source === source && change.legacy === legacy) return false;
-    applyEdit(change, dialog.kind === 'paste' ? {start: range.end, end: range.end} : range, 'atomic');
+    if (!applyEdit(change,dialog.kind === 'paste' ? {start:range.end,end:range.end} : range,'atomic')) return false;
     closeDialog({start: change.start, end: change.end});
     return true;
   }
 
   function chooseCover(selected: CoverView) {
-    if (!conflict?.cover && selected.value === (cover.preview?.value ?? 'none')) return;
-    setCoverDraft(chooseCoverDraft(coverDraft, selected, conflict?.cover));
+    if (!publishedCover && selected.value === (cover.preview?.value ?? 'none')) return;
+    setCoverDraft(chooseCoverDraft(coverDraft,selected,publishedCover));
     setCoverChoice(null);
   }
 
@@ -258,7 +392,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
     const change = insertAttachmentImage(draft.source, draft.contentFormat === 'literal', range, completion.file.id, completion.alt);
     if (change.source === draft.source) return false;
     const after = {start:change.start, end:change.end};
-    record({...draft, source:change.source, contentFormat:'markdown', attachments:next}, previousSelection, after, 'atomic');
+    if (!record({...draft,source:change.source,contentFormat:'markdown',attachments:next},previousSelection,after,'atomic')) return false;
     focusRange.current = after;
     return true;
   }
@@ -284,7 +418,8 @@ export function PageEditor({form}: {form: PageEditorForm}) {
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
-    if (!canSave || submitting.current || attachmentDialog || conflict && (!rebase || coverConflictPending)) {
+    if (!canSave || submitting.current || attachmentDialog || placement || mediaReloading || coverConflictPending ||
+        sharedState && !sharedReady || conflict && !rebase) {
       event.preventDefault();
       return;
     }
@@ -302,6 +437,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
       return;
     }
     submitting.current = true;
+    updateSharedPause();
     setSaving(true);
   }
 
@@ -320,7 +456,12 @@ export function PageEditor({form}: {form: PageEditorForm}) {
 
   return <>
     <form className="page-editor" method="post" action={action} onSubmit={onSubmit} onKeyDown={handleShortcut}>
-      <input type="hidden" name="revision" value={revision} />
+      <input type="hidden" name="revision" value={confirmed?.publishedRevision ?? revision} />
+      {publishGuard && <>
+        <input type="hidden" name="coedit_version" value={publishGuard.version} />
+        <input type="hidden" name="coedit_lease" value={publishGuard.lease} />
+        <input type="hidden" name="coedit_operation" value={publishGuard.operation} />
+      </>}
       <input type="hidden" name="text" value={draft.source} />
       <input type="hidden" name="contentFormat" value={draft.contentFormat} />
       <input type="hidden" name="editorMode" value={editorMode} />
@@ -339,7 +480,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           <span className="page-cover-caption">{coverLabel(cover.preview)}</span>
         </div>}
         {canSave && <button ref={coverButton} className="space-action space-secondary page-cover-change" type="button"
-          aria-haspopup="dialog" disabled={saving} onClick={() => setCoverOpen(true)}>
+          aria-haspopup="dialog" disabled={readOnly} onClick={() => setCoverOpen(true)}>
           <Icon name={hasCover ? 'edit' : 'add'} />{hasCover ? 'Изменить обложку' : 'Добавить обложку'}
         </button>}
       </div>}
@@ -384,12 +525,16 @@ export function PageEditor({form}: {form: PageEditorForm}) {
               <textarea className="page-source-field" id="page-text" rows={12} ref={input} value={draft.source}
                 readOnly={readOnly} spellCheck={false} aria-invalid={Boolean(clientError) || undefined}
                 aria-describedby={describedBy}
-                onCompositionStart={() => { composing.current = {...draft, selection: selection()}; }}
+                onCompositionStart={() => {
+                  composing.current = {...draft, selection: selection()};
+                  updateSharedPause();
+                }}
                 onCompositionEnd={event => {
                   const original = composing.current;
                   composing.current = undefined;
                   rawBeforeInput.current = undefined;
                   if (original) record(sourceDraft(event.currentTarget.value), original.selection, selection(), 'atomic', original);
+                  updateSharedPause();
                 }}
                 onChange={event => {
                   if (readOnly || submitting.current) return;
@@ -397,7 +542,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
                   const before = rawBeforeInput.current ?? after;
                   rawBeforeInput.current = undefined;
                   const next = sourceDraft(event.currentTarget.value);
-                  if (composing.current) setDraft(next);
+                  if (composing.current) replaceDraft(next);
                   else {
                     const native = event.nativeEvent as InputEvent;
                     record(next, before, after, native.inputType === 'insertText' && !native.isComposing ? 'typing' : 'atomic');
@@ -407,6 +552,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           ) : (
             <RichMarkdownEditor ref={rich} id="page-text" source={draft.source} legacy={draft.contentFormat === 'literal'}
               onChange={applyEdit} readOnly={readOnly} describedBy={describedBy} onHistory={stepHistory}
+              onCompositionChange={active => { richComposing.current=active; updateSharedPause(); }}
               attachments={attachments.files} onInsertAttachmentImage={supportsAttachments ? range => openAttachment({kind:'image'}, range) : undefined}
               onPasteMarkdown={range => {
                 history.separate();
@@ -435,7 +581,7 @@ export function PageEditor({form}: {form: PageEditorForm}) {
         onUpload:() => openAttachment({kind:'upload'}), onInsert:file => openAttachment({kind:'image', select:file.id}),
         onRemove:removeAttachment,
       } : undefined} />}
-      {cover.requiresChoice && conflict?.cover && <CoverConflictOptions draft={coverDraft.cover} published={conflict.cover}
+      {cover.requiresChoice && publishedCover && <CoverConflictOptions draft={coverDraft.cover} published={publishedCover}
         choice={coverChoice} disabled={readOnly} onChoice={setCoverChoice} />}
       {conflict && textStillUnchanged && <p className="space-hint">Текст в черновике не менялся. После сохранения останется актуальный текст.</p>}
       {conflict && canSave && (
@@ -446,17 +592,38 @@ export function PageEditor({form}: {form: PageEditorForm}) {
           Использовать эту версию как основу
         </label>
       )}
+      {placement && <section className="shared-draft-recovery" aria-labelledby="private-media-placement">
+        <h2 id="private-media-placement">Проверьте размещение вложений</h2>
+        <p>Коллега изменил текст рядом с вашей вставкой. Файлы остались в черновике. Откройте актуальный текст и разместите их заново.</p>
+        <button className="space-action space-secondary" type="button" onClick={() => {
+          setPlacementCopy(placement.previous);
+          replaceDraft({...currentDraft.current,source:placement.text.source,contentFormat:placement.text.format,textBase:null});
+          setPlacement(undefined);
+        }}>Открыть актуальный текст</button>
+      </section>}
+      {placementCopy !== undefined && <details className="shared-draft-recovery">
+        <summary>Текст до совмещения вложений</summary>
+        <pre tabIndex={0}>{placementCopy}</pre>
+        <button className="space-action space-secondary" type="button" onClick={() => setPlacementCopy(undefined)}>Закрыть копию</button>
+      </details>}
+      {sharedState && <SharedDraftRecovery state={sharedState}
+        onReopen={() => shared.transport.current?.reopen()}
+        onUseCurrent={() => shared.transport.current?.useCurrent()}
+        onDismissCopy={() => shared.transport.current?.dismissCopy()}
+        onMergeInput={text => shared.transport.current?.changeMergeInput(text)}
+        onResolve={text => shared.transport.current?.resolve(text)} />}
       <div className="page-editor-actions">
-        <span className="page-editor-status" role="status">{saving ? 'Сохраняем…' : ''}</span>
+        <span className="page-editor-status" role="status">{saving ? 'Сохраняем…' : mediaReloading ? 'Обновляем вложения и обложку…' : sharedDraftStatus(sharedState)}</span>
         {cancelTo && (
           <a className="space-action space-secondary" href={cancelTo} aria-disabled={saving || undefined}
             onClick={event => { if (submitting.current) event.preventDefault(); }}>
-            {canSave ? 'Отменить' : 'Вернуться к чтению'}
+            {canSave && !sharedState && !form.coeditRetry ? 'Отменить' : 'Вернуться к чтению'}
           </a>
         )}
         {canSave && (
-          <button className="space-action primary-action" type="submit" disabled={saving || Boolean(conflict && (!rebase || coverConflictPending))}>
-            Сохранить
+          <button className="space-action primary-action" type="submit" disabled={saving || Boolean(placement) || mediaReloading || coverConflictPending ||
+            Boolean(sharedState && !sharedReady) || Boolean(conflict && !rebase)}>
+            {form.coeditRetry ? 'Повторить сохранение' : 'Сохранить'}
           </button>
         )}
       </div>

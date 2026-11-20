@@ -9,6 +9,13 @@ impl Store {
     pub(crate) async fn configure_tenants(&self, config: TenantSettings) -> anyhow::Result<()> {
         let mut tx = self.0.begin().await?;
         lock_settings(&mut tx).await?;
+        let tenant_ids: Vec<_> = config
+            .tenants
+            .iter()
+            .map(|tenant| tenant.id)
+            .chain(config.memberships.iter().map(|member| member.tenant_id))
+            .collect();
+        lock_permission_tenants(&mut tx, &tenant_ids).await?;
         for tenant in &config.tenants {
             sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name")
             .bind(tenant.id).bind(&tenant.name).execute(&mut *tx).await?;
@@ -45,6 +52,8 @@ impl Store {
     pub(crate) async fn configure_grants(&self, config: GrantSettings) -> anyhow::Result<()> {
         let mut tx = self.0.begin().await?;
         lock_settings(&mut tx).await?;
+        let tenant_ids: Vec<_> = config.grants.iter().map(|grant| grant.tenant_id).collect();
+        lock_permission_tenants(&mut tx, &tenant_ids).await?;
         for grant in &config.grants {
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM spaces WHERE tenant_id = $1 AND id = $2)",
@@ -84,6 +93,19 @@ impl Store {
 async fn lock_settings(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     // Different operator batches may touch the same rows in different orders.
     sqlx::query("SELECT pg_advisory_xact_lock(48744680, 1)")
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+async fn lock_permission_tenants(
+    conn: &mut PgConnection,
+    tenant_ids: &[Uuid],
+) -> Result<(), sqlx::Error> {
+    // Page mutations take a share lock before reading authorization and
+    // publishing to watchers. Permission changes take the same parent first.
+    sqlx::query("SELECT id FROM tenants WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+        .bind(tenant_ids)
         .execute(conn)
         .await?;
     Ok(())

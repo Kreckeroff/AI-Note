@@ -55,3 +55,18 @@ test('attachment-only operations and image insertion preserve the complete draft
   assert.deepEqual(history.step('redo'), withFile);
   assert.deepEqual(history.step('redo'), withImage);
 });
+
+test('an overlapping remote journal blocks history even if it produces the same source bytes', () => {
+  const history = createDraftHistory();
+  const base = frame('aaa');
+  const local = frame('aaaa');
+  history.record(base, local);
+  history.walkBack(() => undefined);
+  let blocked = false;
+  const result = history.step('undo', (_, _to, _span, overlap) => {
+    blocked = overlap;
+    return overlap ? undefined : base;
+  });
+  assert.equal(blocked, true);
+  assert.equal(result, undefined);
+});

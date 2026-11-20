@@ -10,7 +10,7 @@ use super::{
     can_change_thread,
 };
 use crate::{
-    db::{PageAddress, Store, page_access::PagePermissions},
+    db::{PageAddress, Store, page_access::PagePermissions, sections::decode_title},
     text::js_trim,
 };
 
@@ -127,7 +127,12 @@ pub(crate) enum MentionLookup {
     Found(MentionCandidates),
 }
 
-#[derive(FromRow)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NotificationTarget {
+    Mention { thread_id: Uuid, message_id: Uuid },
+    Publication { title: String, revision: i64 },
+}
+
 pub(crate) struct DiscussionNotification {
     pub(crate) id: Uuid,
     pub(crate) author: String,
@@ -135,8 +140,48 @@ pub(crate) struct DiscussionNotification {
     pub(crate) tenant_id: Uuid,
     pub(crate) space_id: Uuid,
     pub(crate) page_id: Uuid,
-    pub(crate) thread_id: Uuid,
-    pub(crate) message_id: Uuid,
+    pub(crate) target: NotificationTarget,
+}
+
+#[derive(FromRow)]
+struct NotificationRow {
+    id: Uuid,
+    author: String,
+    created_at: i64,
+    tenant_id: Uuid,
+    space_id: Uuid,
+    page_id: Uuid,
+    thread_id: Option<Uuid>,
+    message_id: Option<Uuid>,
+    title: Option<Vec<u8>>,
+    revision: Option<i64>,
+}
+
+impl TryFrom<NotificationRow> for DiscussionNotification {
+    type Error = sqlx::Error;
+
+    fn try_from(row: NotificationRow) -> Result<Self, Self::Error> {
+        let target = match (row.thread_id, row.message_id, row.title, row.revision) {
+            (Some(thread_id), Some(message_id), None, None) => NotificationTarget::Mention {
+                thread_id,
+                message_id,
+            },
+            (None, None, Some(title), Some(revision)) => NotificationTarget::Publication {
+                title: decode_title(title, "page_revisions.title")?,
+                revision,
+            },
+            _ => return Err(sqlx::Error::Protocol("invalid page notification".into())),
+        };
+        Ok(Self {
+            id: row.id,
+            author: row.author,
+            created_at: row.created_at,
+            tenant_id: row.tenant_id,
+            space_id: row.space_id,
+            page_id: row.page_id,
+            target,
+        })
+    }
 }
 
 pub(crate) struct DiscussionNotifications {
@@ -335,25 +380,39 @@ impl Store {
     ) -> Result<DiscussionNotifications, sqlx::Error> {
         // Permissions and notification contents are evaluated in this one
         // statement, so revoked pages never reveal their notification data.
-        let mut notifications: Vec<DiscussionNotification> = sqlx::query_as(
-            "SELECT n.id, n.tenant_id, n.space_id, n.page_id, n.created_at,
-                    m.thread_id, n.message_id, m.author_name AS author
-             FROM page_comment_mentions n
-             JOIN page_comment_messages m ON (m.tenant_id, m.space_id, m.page_id, m.id)
-                = (n.tenant_id, n.space_id, n.page_id, n.message_id)
-             CROSS JOIN LATERAL page_permissions(n.tenant_id, n.space_id, n.recipient_account_id, n.page_id) access
-             WHERE n.recipient_account_id = $1 AND access.can_read
-             ORDER BY n.created_at DESC, n.id DESC LIMIT $2 OFFSET $3",
+        let mut rows: Vec<NotificationRow> = sqlx::query_as(
+            "(SELECT n.id, n.tenant_id, n.space_id, n.page_id, n.created_at,
+                     m.thread_id, n.message_id, m.author_name AS author,
+                     NULL::bytea AS title, NULL::bigint AS revision
+              FROM page_comment_mentions n
+              JOIN page_comment_messages m ON (m.tenant_id, m.space_id, m.page_id, m.id)
+                 = (n.tenant_id, n.space_id, n.page_id, n.message_id)
+              CROSS JOIN LATERAL page_permissions(n.tenant_id, n.space_id, n.recipient_account_id, n.page_id) access
+              WHERE n.recipient_account_id = $1 AND access.can_read
+              ORDER BY n.created_at DESC, n.id DESC LIMIT ($2::bigint + $3::bigint))
+             UNION ALL
+             (SELECT n.id, n.tenant_id, n.space_id, n.page_id, n.created_at,
+                     NULL::uuid, NULL::uuid, r.author_name, r.title, r.revision
+              FROM page_publication_notices n
+              JOIN page_revisions r ON (r.tenant_id, r.space_id, r.page_id, r.revision)
+                 = (n.tenant_id, n.space_id, n.page_id, n.revision)
+              CROSS JOIN LATERAL page_permissions(n.tenant_id, n.space_id, n.recipient_account_id, n.page_id) access
+              WHERE n.recipient_account_id = $1 AND access.can_read
+              ORDER BY n.created_at DESC, n.id DESC LIMIT ($2::bigint + $3::bigint))
+             ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3",
         )
         .bind(account)
         .bind(NOTIFICATION_PAGE_SIZE + 1)
         .bind(offset)
         .fetch_all(&self.0)
         .await?;
-        let next_offset = trim_page(&mut notifications, offset, NOTIFICATION_PAGE_SIZE);
+        let next_offset = trim_page(&mut rows, offset, NOTIFICATION_PAGE_SIZE);
         Ok(DiscussionNotifications {
             next_offset,
-            notifications,
+            notifications: rows
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
         })
     }
 

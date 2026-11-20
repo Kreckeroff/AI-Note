@@ -3,8 +3,10 @@ use uuid::Uuid;
 
 use super::{
     Attachment, PageAddress, PageContentFormat, PageCover, Store,
+    coediting::record_publication,
     page_access::PAGE_ACCESS,
     page_attachments::{REVISION_ATTACHMENTS, decode_attachments, record_snapshot_attachments},
+    page_watch::notify_page_publication,
     sections::decode_title,
 };
 
@@ -284,6 +286,29 @@ pub(super) async fn record_current_snapshot(
     author: Option<Uuid>,
     reuse_cover_from: Option<i64>,
 ) -> Result<(), sqlx::Error> {
+    record_snapshot(tx, address, author, reuse_cover_from).await?;
+    Ok(())
+}
+
+pub(super) async fn record_page_publication(
+    tx: &mut PgConnection,
+    address: &PageAddress,
+    reuse_cover_from: Option<i64>,
+    from_shared: bool,
+) -> Result<(), sqlx::Error> {
+    let (revision, source, is_markdown) =
+        record_snapshot(tx, address, Some(address.account), reuse_cover_from).await?;
+    let format = PageContentFormat::from_markdown(is_markdown);
+    record_publication(tx, address, &source, format, revision, from_shared).await?;
+    notify_page_publication(tx, address, revision).await
+}
+
+async fn record_snapshot(
+    tx: &mut PgConnection,
+    address: &PageAddress,
+    author: Option<Uuid>,
+    reuse_cover_from: Option<i64>,
+) -> Result<(i64, String, bool), sqlx::Error> {
     if reuse_cover_from.is_none() {
         sqlx::query(
             "INSERT INTO page_revision_covers (tenant_id, space_id, page_id, asset_id, jpeg)
@@ -301,7 +326,7 @@ pub(super) async fn record_current_snapshot(
         .execute(&mut *tx)
         .await?;
     }
-    let added = sqlx::query(
+    let snapshot = sqlx::query_as(
         "INSERT INTO page_revisions
              (tenant_id, space_id, page_id, revision, title, title_key, markdown,
               content_is_markdown, cover_theme, cover_asset_id, author_account_id, author_name, recorded_at)
@@ -316,17 +341,16 @@ pub(super) async fn record_current_snapshot(
          LEFT JOIN accounts a ON a.id = $4
          WHERE (p.tenant_id, p.space_id, p.id) = ($1, $2, $3)
            AND ($4::uuid IS NULL OR a.id IS NOT NULL)
-           AND ($5 IS NULL OR previous.revision IS NOT NULL)",
+           AND ($5 IS NULL OR previous.revision IS NOT NULL)
+         RETURNING revision, markdown, content_is_markdown",
     )
     .bind(address.tenant)
     .bind(address.space)
     .bind(address.page)
     .bind(author)
     .bind(reuse_cover_from)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
-    if added.rows_affected() != 1 {
-        return Err(sqlx::Error::RowNotFound);
-    }
-    record_snapshot_attachments(tx, address).await
+    record_snapshot_attachments(tx, address).await?;
+    Ok(snapshot)
 }

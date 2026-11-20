@@ -5,18 +5,21 @@ use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
 use crate::{
-    markdown::{attachment_reference_ids, contains_attachment_reference},
+    markdown::{
+        attachment_reference_ids, contains_attachment_reference, without_attachment_references,
+    },
     text::{markdown_to_text, normalize_line_endings, text_to_markdown},
 };
 
 use super::{
     Attachment, AttachmentPatch, PageContentFormat, Store,
+    coediting::{CoeditResult, current_coedit_draft, guard_coedit_publish, validate_coedit_lease},
     page_access::{PAGE_ACCESS, PageAddress, PageEditAccess, lock_page_for_edit},
     page_attachments::{
         CURRENT_ATTACHMENTS, apply_attachment_patch, decode_attachments, has_retired_attachments,
     },
     page_cover::{CoverUpdate, PageCover, update_page_cover},
-    page_history::{ensure_baseline, record_current_snapshot},
+    page_history::{ensure_baseline, record_page_publication},
 };
 
 pub(crate) struct PageText {
@@ -54,11 +57,118 @@ pub(crate) enum SavePageText {
     Missing,
     Forbidden,
     Conflict(PageText),
+    CoeditConflict(String, PageContentFormat),
+    CoeditLeaseExpired,
+    CoeditOperationConflict,
     InvalidCover,
     InvalidAttachments,
     AttachmentReferencesPresent,
     AttachmentRetired,
     Saved,
+}
+
+pub(crate) struct CoeditPublication {
+    pub(crate) session: [u8; 32],
+    pub(crate) lease: Uuid,
+    pub(crate) version: i64,
+    pub(crate) operation: Uuid,
+    pub(crate) cover_base: Option<PageCover>,
+}
+
+struct CoeditPublishReceipt {
+    operation: Uuid,
+    version: i64,
+    fingerprint: [u8; 32],
+}
+
+impl CoeditPublishReceipt {
+    fn new(
+        permit: &CoeditPublication,
+        base_revision: i64,
+        update: &PageUpdate<'_>,
+        cover: CoverUpdate,
+        attachments: Option<AttachmentPatch<'_>>,
+    ) -> Self {
+        let content = PageSaveReceipt::new(base_revision, update, cover, attachments);
+        let mut hash = Sha256::new();
+        hash.update(b"coedit-publish-v1");
+        hash.update(base_revision.to_be_bytes());
+        hash.update(permit.version.to_be_bytes());
+        hash.update(permit.lease.as_bytes());
+        hash.update(content.fingerprint);
+        if let (CoverUpdate::Set(_), Some(base)) = (cover, permit.cover_base) {
+            hash.update(base.value());
+        }
+        Self {
+            operation: permit.operation,
+            version: permit.version,
+            fingerprint: hash.finalize().into(),
+        }
+    }
+
+    async fn previous(
+        &self,
+        tx: &mut PgConnection,
+        address: &PageAddress,
+    ) -> Result<Option<bool>, sqlx::Error> {
+        let row: Option<(String, Vec<u8>)> = sqlx::query_as(
+            "SELECT outcome, fingerprint FROM page_coedit_receipts
+             WHERE (tenant_id, space_id, page_id, account_id, operation_id) = ($1, $2, $3, $4, $5)",
+        )
+        .bind(address.tenant)
+        .bind(address.space)
+        .bind(address.page)
+        .bind(address.account)
+        .bind(self.operation)
+        .fetch_optional(tx)
+        .await?;
+        Ok(row.map(|(outcome, fingerprint)| {
+            outcome == "published" && fingerprint == self.fingerprint
+        }))
+    }
+
+    async fn record(self, tx: &mut PgConnection, address: &PageAddress) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO page_coedit_receipts
+                 (tenant_id, space_id, page_id, account_id, operation_id, fingerprint, version, outcome)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'published')",
+        )
+        .bind(address.tenant)
+        .bind(address.space)
+        .bind(address.page)
+        .bind(address.account)
+        .bind(self.operation)
+        .bind(&self.fingerprint[..])
+        .bind(self.version)
+        .execute(tx)
+        .await?;
+        Ok(())
+    }
+}
+
+fn includes_confirmed_draft(
+    update: &PageUpdate<'_>,
+    draft: &str,
+    format: PageContentFormat,
+    attachments: Option<AttachmentPatch<'_>>,
+) -> bool {
+    match update {
+        PageUpdate::Source(source, submitted_format) => {
+            let staged = attachments.map_or(&[][..], |patch| patch.add);
+            let stripped = if *submitted_format == PageContentFormat::Markdown {
+                without_attachment_references(source, staged)
+            } else {
+                std::borrow::Cow::Borrowed(*source)
+            };
+            // Adding inline media can promote a legacy page to Markdown.
+            // The escaped literal source stays byte-identical in that case.
+            stripped == draft && (*submitted_format == format || stripped != *source)
+        }
+        PageUpdate::PlainText(text) => {
+            format == PageContentFormat::Literal && text_to_markdown(text) == draft
+        }
+        PageUpdate::Keep => false,
+    }
 }
 
 struct PageSaveReceipt {
@@ -227,6 +337,39 @@ impl Store {
         cover: CoverUpdate,
         attachments: Option<AttachmentPatch<'_>>,
     ) -> Result<SavePageText, sqlx::Error> {
+        self.save_page_submission(address, base_revision, update, cover, attachments, None)
+            .await
+    }
+
+    pub(crate) async fn publish_coedit(
+        &self,
+        address: &PageAddress,
+        base_revision: i64,
+        update: PageUpdate<'_>,
+        cover: CoverUpdate,
+        attachments: Option<AttachmentPatch<'_>>,
+        publication: CoeditPublication,
+    ) -> Result<SavePageText, sqlx::Error> {
+        self.save_page_submission(
+            address,
+            base_revision,
+            update,
+            cover,
+            attachments,
+            Some(publication),
+        )
+        .await
+    }
+
+    async fn save_page_submission(
+        &self,
+        address: &PageAddress,
+        base_revision: i64,
+        update: PageUpdate<'_>,
+        cover: CoverUpdate,
+        attachments: Option<AttachmentPatch<'_>>,
+        publication: Option<CoeditPublication>,
+    ) -> Result<SavePageText, sqlx::Error> {
         let mut tx = self.0.begin().await?;
         match lock_page_for_edit(&mut tx, address).await? {
             PageEditAccess::Missing => return Ok(SavePageText::Missing),
@@ -237,7 +380,55 @@ impl Store {
             return Ok(SavePageText::InvalidAttachments);
         }
         let attachments = attachments.filter(|patch| !patch.is_empty());
+        let coedit_receipt = if let Some(permit) = &publication {
+            let receipt =
+                CoeditPublishReceipt::new(permit, base_revision, &update, cover, attachments);
+            if let Some(matches) = receipt.previous(&mut tx, address).await? {
+                if !validate_coedit_lease(&mut tx, address, &permit.session, permit.lease).await? {
+                    return Ok(SavePageText::CoeditLeaseExpired);
+                }
+                return Ok(if matches {
+                    SavePageText::Saved
+                } else {
+                    SavePageText::CoeditOperationConflict
+                });
+            }
+            let draft = match guard_coedit_publish(
+                &mut tx,
+                address,
+                &permit.session,
+                permit.lease,
+                permit.version,
+            )
+            .await?
+            {
+                CoeditResult::Saved(draft) => draft,
+                CoeditResult::Conflict(conflict) => {
+                    return Ok(SavePageText::CoeditConflict(
+                        conflict.snapshot.source,
+                        conflict.snapshot.format,
+                    ));
+                }
+                CoeditResult::BaseExpired(draft) => {
+                    return Ok(SavePageText::CoeditConflict(draft.source, draft.format));
+                }
+                CoeditResult::Missing => return Ok(SavePageText::Missing),
+                CoeditResult::Forbidden => return Ok(SavePageText::Forbidden),
+                CoeditResult::LeaseExpired => return Ok(SavePageText::CoeditLeaseExpired),
+                CoeditResult::Invalid | CoeditResult::OperationConflict => {
+                    return Ok(SavePageText::CoeditOperationConflict);
+                }
+            };
+            if !includes_confirmed_draft(&update, &draft.source, draft.format, attachments) {
+                return Ok(SavePageText::CoeditConflict(draft.source, draft.format));
+            }
+            Some(receipt)
+        } else {
+            None
+        };
+
         let receipt = match (&update, cover, attachments) {
+            _ if publication.is_some() => None,
             (PageUpdate::PlainText(_), CoverUpdate::Keep, None) => None,
             _ => Some(PageSaveReceipt::new(
                 base_revision,
@@ -262,22 +453,56 @@ impl Store {
             CoverUpdate::Keep => current.cover,
             CoverUpdate::Set(cover) => cover,
         };
-        let text_matches = update.matches(&current);
+        // Live text may advance the revision shown by an editor while that
+        // editor's cover selection still refers to an earlier publication.
+        if let (Some(permit), CoverUpdate::Set(_)) = (&publication, cover)
+            && selected != current.cover
+        {
+            let Some(base) = permit.cover_base else {
+                return Ok(SavePageText::InvalidCover);
+            };
+            if base != current.cover {
+                return Ok(SavePageText::Conflict(current));
+            }
+        }
+        // Legacy forms have always treated unchanged source as a no-op even
+        // when their format field changed. A guarded draft controls both.
+        let shared_format_changed = publication.is_some()
+            && matches!(&update, PageUpdate::Source(_, format) if *format != current.format);
+        let text_matches = !shared_format_changed && update.matches(&current);
         let attachment_change = attachments.filter(|patch| patch.changes(&current.attachments));
         if text_matches && selected == current.cover && attachment_change.is_none() {
             // A current-base save can acknowledge the exact request without
             // incrementing the revision. A stale no-op must not claim a write.
-            if let Some(receipt) = receipt
-                && current.content_revision == base_revision
-            {
-                receipt.record(&mut tx, address).await?;
+            if current.content_revision == base_revision {
+                if let Some(receipt) = receipt {
+                    receipt.record(&mut tx, address).await?;
+                }
+                if let Some(receipt) = coedit_receipt {
+                    receipt.record(&mut tx, address).await?;
+                }
                 tx.commit().await?;
+            } else if publication.is_some() {
+                return Ok(SavePageText::Conflict(current));
             }
             return Ok(SavePageText::Saved);
         }
         if current.content_revision != base_revision {
             return Ok(SavePageText::Conflict(current));
         }
+        let from_shared = if publication.is_some() {
+            true
+        } else if let Some((source, format, has_conflict)) =
+            current_coedit_draft(&mut tx, address).await?
+        {
+            let matches = includes_confirmed_draft(&update, &source, format, attachments);
+            if has_conflict || !matches && (source != current.source || format != current.format) {
+                return Ok(SavePageText::CoeditConflict(source, format));
+            }
+            matches
+        } else {
+            false
+        };
         let (source, format) = match update {
             PageUpdate::PlainText(text) if !text_matches => (
                 std::borrow::Cow::Owned(text_to_markdown(text)),
@@ -339,14 +564,17 @@ impl Store {
         .bind(address.page)
         .execute(&mut *tx)
         .await?;
-        record_current_snapshot(
+        record_page_publication(
             &mut tx,
             address,
-            Some(address.account),
             (selected == current.cover).then_some(base_revision),
+            from_shared,
         )
         .await?;
         if let Some(receipt) = receipt {
+            receipt.record(&mut tx, address).await?;
+        }
+        if let Some(receipt) = coedit_receipt {
             receipt.record(&mut tx, address).await?;
         }
         tx.commit().await?;

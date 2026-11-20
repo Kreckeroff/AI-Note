@@ -1,4 +1,5 @@
 import {useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
+import {flushSync} from 'react-dom';
 import {Catalog, accessLabel} from './Catalog';
 import {CreateSpaceDialog} from './CreateSpaceDialog';
 import {DocumentCreationDialog} from './DocumentCreationDialog';
@@ -10,6 +11,8 @@ import {PageCoverArt} from './editor/CoverGallery';
 import {PageInspector, type DiscussionReference, type InspectorTab} from './collaboration/PageInspector';
 import {PageSharingDialog} from './collaboration/PageSharingDialog';
 import {PageNotifications} from './collaboration/PageNotifications';
+import {PagePresence, usePagePresence} from './collaboration/PagePresence';
+import {readPublishedPage} from './collaboration/publishedPage';
 import {discussionRange, focusLinkedFragment, scrollToRange, selectedPageAnchor, type DiscussionAnchor, type SelectionAnchor} from './collaboration/pageAnchors';
 import {usePageCommand} from './collaboration/api';
 import type {SectionTreeModel, Space, WorkspaceModel, WorkspacePageModel} from './model';
@@ -48,7 +51,13 @@ function discussionReference(): DiscussionReference | undefined {
 
 function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: Space; tree: SectionTreeModel}) {
   const {tenant, catalog: {options}} = workspace;
-  const {sections, selected, canCreateSection, pages, selectedPage, canCreatePage, reading, editor, pageOnly} = tree;
+  const {sections, selected, canCreateSection, pages, selectedPage: initialPage, canCreatePage, reading: initialReading, editor, pageOnly} = tree;
+  const [liveReading, setLiveReading] = useState(initialReading);
+  const [selectedPage,setSelectedPage] = useState(initialPage);
+  const [publishedVersion,setPublishedVersion] = useState(initialReading?.revision ?? editor?.revision);
+  const [accessEnded,setAccessEnded] = useState(false);
+  const redirecting = useRef(false);
+  const reading = liveReading;
   const [reference] = useState(discussionReference);
   const [inspectorOpen, setInspectorOpen] = useState(Boolean(reference));
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>(reference ? 'comments' : 'context');
@@ -62,11 +71,18 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
   const returnShareFocus = useRef(false);
   const publishedBody = useRef<HTMLDivElement>(null);
   const pageTo = selectedPage ? pagePath(tenant.id, space.id, selectedPage.id) : undefined;
+  function endAccess() {
+    if (!pageTo || redirecting.current) return;
+    redirecting.current = true;
+    flushSync(() => setAccessEnded(true));
+    window.location.replace(pageTo);
+  }
+  const presence = usePagePresence(accessEnded ? undefined : pageTo,Boolean(editor),endAccess);
   const declaredHistory = editor ? editor.historyTo : reading?.historyTo;
   const historyTo = pageTo && declaredHistory === `${pageTo}/revisions` ? declaredHistory : undefined;
   const role = tree.accessRole ?? (space.isOwner ? 'owner' : historyTo ? 'edit' : 'read');
   const canShare = tree.canShare ?? space.isOwner;
-  const revision = editor?.revision ?? reading?.revision;
+  const revision = publishedVersion;
   const editTo = editor ? null : reading?.editTo;
   const catalogHref = withOptions(spacesPath(tenant.id), options);
   const spaceHref = withOptions(spacePath(tenant.id, space.id), options);
@@ -78,6 +94,35 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
   const emptyMessage = selected ? 'Этот раздел пока пуст' :
     !sections.length ? 'В пространстве пока нет разделов' :
       !pages.length ? 'Нет доступных страниц' : 'Выберите раздел в дереве';
+
+  useEffect(() => {
+    if (!pageTo || !publishedVersion || !presence?.publishedRevision ||
+        BigInt(publishedVersion) >= BigInt(presence.publishedRevision)) return;
+    const request = new AbortController();
+    let timeout: number | undefined;
+    async function refresh() {
+      try {
+        const next = await readPublishedPage(pageTo!,request.signal);
+        if (next?.reading.revision && !request.signal.aborted) {
+          setSelectedPage(next.page);
+          setPublishedVersion(next.reading.revision);
+          if (!editor) {
+            setLiveReading(next.reading);
+            setSelection(null);
+          }
+          return;
+        }
+      } catch {
+        // Presence can recover independently of the page snapshot request.
+      }
+      if (!request.signal.aborted) timeout = window.setTimeout(() => void refresh(),4000);
+    }
+    void refresh();
+    return () => {
+      request.abort();
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
+  },[pageTo,editor,publishedVersion,presence?.publishedRevision]);
 
   useLayoutEffect(() => {
     if (!inspectorOpen && returnInspectorFocus.current) {
@@ -131,6 +176,8 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
     return true;
   }
 
+  if (accessEnded) return <main className="space-shell"><h1>Проверяем доступ к странице…</h1></main>;
+
   return (
     <main className={`documents-shell${pageOnly ? ' documents-page-only' : ''}${inspectorOpen ? ' documents-inspector-open' : ''}`}>
       {!pageOnly && <aside className="documents-tree" aria-label="Дерево пространства">
@@ -152,7 +199,7 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
                         <li key={page.id}>
                           <a href={pageHref(page.id)} data-page-id={page.id}
                             aria-current={selectedPage?.id === page.id ? 'page' : undefined}>
-                            <Icon name="file" /><span>{page.title}</span>
+                            <Icon name="file" /><span>{page.id===selectedPage?.id ? selectedPage.title : page.title}</span>
                           </a>
                         </li>
                       ))}
@@ -204,12 +251,13 @@ function Documents({workspace, space, tree}: {workspace: WorkspaceModel; space: 
                 onClick={() => inspectorOpen ? dismissInspector() : setInspectorOpen(true)}>
                 <Icon name="context" />Контекст страницы
               </button>
+              {presence && <PagePresence people={presence.people} />}
               {canShare && <button className="space-action primary-action" type="button" ref={shareTrigger}
                 aria-haspopup="dialog" onClick={() => setShareOpen(true)}>Поделиться</button>}
             </div>
           )}
           {selectedPage ? (
-            editor ? <PageEditor form={editor} /> : (
+            editor ? <PageEditor form={editor} pageTo={pageTo} onAccessEnded={endAccess} /> : (
               <>
                 {reading?.renderedHtml ? (
                   // The server supplies this fragment from its allowlisted Markdown renderer.

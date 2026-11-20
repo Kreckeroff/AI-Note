@@ -3,6 +3,7 @@ import {Icon} from '../Icon';
 import {PageHistoryPanel} from '../editor/PageHistoryPanel';
 import {CollaborationTabs} from './CollaborationTabs';
 import {PageDiscussion} from './PageDiscussion';
+import {PageWatch} from './PageWatch';
 import {roleLabels, type EffectiveRole} from './api';
 import type {DiscussionAnchor, SelectionAnchor} from './pageAnchors';
 
@@ -77,6 +78,7 @@ export function PageInspector({id, pageTo, title, role, revision, pageOnly, open
           {pageOnly && <p>Только эта страница</p>}</div>
         <div className="inspector-property"><h3>О странице</h3><p>{title}</p>
           {revision && <p className="collaboration-hint">Редакция {revision}</p>}</div>
+        <PageWatch pageTo={pageTo} active={open && availableTab === 'context'} />
       </section>
       <section className="document-inspector-content" {...attributes('comments')}>
         <PageDiscussion pageTo={pageTo} active={open && availableTab === 'comments'} anchor={anchor}

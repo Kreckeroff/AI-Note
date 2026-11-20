@@ -1,5 +1,7 @@
 mod admin;
 mod clock;
+mod coedit_http;
+mod coedit_presence;
 mod cover_image;
 mod db;
 mod external_sharing;

@@ -7,6 +7,8 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
+    coedit_http::{self, CoeditSurface},
+    coedit_presence::PresenceTracker,
     db::{PageAddress, Store, external_sharing::AssetKind},
     external_sharing::{PublishedResource, SharingDelivery, sharing_error},
     http::{self, Form},
@@ -19,6 +21,7 @@ use crate::{
 pub(crate) enum SocialRoute<'a> {
     Sharing(DocumentsRoute, Uuid),
     Discussion(DocumentsRoute, Uuid),
+    Coediting(DocumentsRoute, Uuid, CoeditSurface),
     Notifications,
     Invitation(Uuid, &'a str),
     Published(Uuid, &'a str, PublishedResource),
@@ -53,7 +56,10 @@ impl<'a> SocialRoute<'a> {
                 .then_some(Self::Published(id, token, resource));
         }
         let (document, surface) = path.rsplit_once('/')?;
-        if !matches!(surface, "sharing" | "discussion") {
+        if !matches!(
+            surface,
+            "sharing" | "discussion" | "coedit" | "presence" | "watch"
+        ) {
             return None;
         }
         let Route::Documents(
@@ -65,17 +71,20 @@ impl<'a> SocialRoute<'a> {
         else {
             return None;
         };
-        Some(if surface == "sharing" {
-            Self::Sharing(route, page)
-        } else {
-            Self::Discussion(route, page)
+        Some(match surface {
+            "sharing" => Self::Sharing(route, page),
+            "discussion" => Self::Discussion(route, page),
+            "coedit" => Self::Coediting(route, page, CoeditSurface::Draft),
+            "presence" => Self::Coediting(route, page, CoeditSurface::Presence),
+            "watch" => Self::Coediting(route, page, CoeditSurface::Watch),
+            _ => return None,
         })
     }
 
     pub(crate) fn is_api(&self) -> bool {
         matches!(
             self,
-            Self::Sharing(..) | Self::Discussion(..) | Self::Notifications
+            Self::Sharing(..) | Self::Discussion(..) | Self::Coediting(..) | Self::Notifications
         )
     }
 }
@@ -88,6 +97,7 @@ pub(crate) async fn handle(
     store: &Store,
     identity: &Identity,
     delivery: &SharingDelivery,
+    presence: &PresenceTracker,
     origin: &str,
     request: Request,
 ) -> Result<Response, sqlx::Error> {
@@ -116,7 +126,9 @@ pub(crate) async fn handle(
         SocialRoute::Notifications => {
             return page_discussion_http::notifications(store, principal.id, request).await;
         }
-        SocialRoute::Sharing(route, page) | SocialRoute::Discussion(route, page) => (route, page),
+        SocialRoute::Sharing(route, page)
+        | SocialRoute::Discussion(route, page)
+        | SocialRoute::Coediting(route, page, _) => (route, page),
         SocialRoute::Invitation(..) | SocialRoute::Published(..) => unreachable!("already handled"),
     };
     let address = PageAddress {
@@ -125,10 +137,15 @@ pub(crate) async fn handle(
         page,
         account: principal.id,
     };
-    if matches!(social, SocialRoute::Discussion(..)) {
-        return page_discussion_http::handle(store, &address, origin, request).await;
+    match social {
+        SocialRoute::Discussion(..) => {
+            page_discussion_http::handle(store, &address, origin, request).await
+        }
+        SocialRoute::Coediting(_, _, surface) => {
+            coedit_http::handle(store, presence, &address, surface, origin, request).await
+        }
+        _ => sharing(store, delivery, &address, origin, request).await,
     }
-    sharing(store, delivery, &address, origin, request).await
 }
 
 async fn sharing(

@@ -2,7 +2,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::{
-    PageAddress, PageCover, RestorePageRevision, Store, ensure_baseline, record_current_snapshot,
+    PageAddress, PageCover, RestorePageRevision, Store, ensure_baseline, record_page_publication,
 };
 use crate::db::{
     page_access::{PageEditAccess, lock_page_for_edit},
@@ -109,13 +109,7 @@ impl Store {
             return Err(sqlx::Error::RowNotFound);
         }
         restore_snapshot_attachments(&mut tx, address, source_revision).await?;
-        record_current_snapshot(
-            &mut tx,
-            address,
-            Some(address.account),
-            Some(source_revision),
-        )
-        .await?;
+        record_page_publication(&mut tx, address, Some(source_revision), false).await?;
         sqlx::query(
             "INSERT INTO page_revision_restores
                  (tenant_id, space_id, page_id, account_id, base_revision, source_revision, restored_revision)

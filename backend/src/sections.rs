@@ -92,6 +92,13 @@ impl PageEditorMode {
     }
 }
 
+#[derive(Clone, Serialize)]
+pub(crate) struct CoeditRetry {
+    pub lease: Uuid,
+    pub version: String,
+    pub operation: Uuid,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PageEditorForm {
@@ -117,6 +124,8 @@ pub(crate) struct PageEditorForm {
     pub attachment_upload_to: Option<String>,
     pub attachment_added: Vec<Uuid>,
     pub attachment_removed: Vec<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coedit_retry: Option<CoeditRetry>,
 }
 
 #[derive(Serialize)]

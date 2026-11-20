@@ -170,8 +170,13 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
     assert!(!visible.can_comment);
     let notifications = store.discussion_notifications(reader.account, 0).await?;
     assert_eq!(notifications.notifications.len(), 1);
-    assert_eq!(notifications.notifications[0].thread_id, created.id);
-    assert_eq!(notifications.notifications[0].message_id, created.id);
+    assert_eq!(
+        notifications.notifications[0].target,
+        super::NotificationTarget::Mention {
+            thread_id: created.id,
+            message_id: created.id
+        },
+    );
     sqlx::query("DELETE FROM page_grants WHERE (tenant_id, space_id, page_id, account_id) = ($1, $2, $3, $4)")
        .bind(reader.tenant).bind(reader.space).bind(reader.page).bind(reader.account).execute(&pool).await?;
     assert!(

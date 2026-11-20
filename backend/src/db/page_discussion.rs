@@ -3,7 +3,9 @@ mod reads;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use reads::{DiscussionQuote, MentionLookup, ReplyPage, ThreadQuery, ThreadSelection};
+pub(crate) use reads::{
+    DiscussionQuote, MentionLookup, NotificationTarget, ReplyPage, ThreadQuery, ThreadSelection,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 use std::sync::LazyLock;
-use std::{cell::RefCell, collections::BTreeSet};
+use std::{cell::RefCell, collections::BTreeSet, ops::Range};
 
 use regex::Regex;
 use serde::Serialize;
@@ -30,12 +30,15 @@ pub(crate) fn render_markdown(source: &str) -> RenderedMarkdown {
 }
 
 type AttachmentUrl<'a> = dyn Fn(Uuid, bool) -> Option<&'a str> + 'a;
+type AttachmentRender<'a> = dyn Fn(Uuid, bool, &str) -> Option<&'a str> + 'a;
 
 pub(crate) fn render_markdown_with_attachments(
     source: &str,
     attachment_url: &AttachmentUrl<'_>,
 ) -> RenderedMarkdown {
-    RenderedMarkdown(blocks::render(source, attachment_url))
+    RenderedMarkdown(blocks::render(source, &|id, image, _| {
+        attachment_url(id, image)
+    }))
 }
 
 pub(crate) fn contains_attachment_reference(source: &str, ids: &[Uuid]) -> bool {
@@ -70,6 +73,38 @@ pub(crate) fn attachment_image_ids(source: &str) -> Vec<Uuid> {
         });
     }
     found.into_inner().into_iter().collect()
+}
+
+pub(crate) fn without_attachment_references<'a>(
+    source: &'a str,
+    ids: &[Uuid],
+) -> std::borrow::Cow<'a, str> {
+    if ids.is_empty() || !source.contains("attachment:") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let spans = RefCell::new(Vec::<Range<usize>>::new());
+    blocks::render(source, &|id, _, markup| {
+        if ids.contains(&id) {
+            // Blocks hand the inline renderer slices of the original source.
+            // Use their byte offsets to keep surrounding Markdown unchanged.
+            let start = markup.as_ptr() as usize - source.as_ptr() as usize;
+            spans.borrow_mut().push(start..start + markup.len());
+        }
+        None
+    });
+    let mut spans = spans.into_inner();
+    if spans.is_empty() {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    spans.sort_unstable_by_key(|span| span.start);
+    let mut result = String::with_capacity(source.len());
+    let mut from = 0;
+    for span in spans {
+        result.push_str(&source[from..span.start]);
+        from = span.end;
+    }
+    result.push_str(&source[from..]);
+    std::borrow::Cow::Owned(result)
 }
 
 fn run(text: &[u8], marker: u8) -> usize {
@@ -161,7 +196,7 @@ fn attachment_id(link: &MarkdownLink<'_>) -> Option<Uuid> {
     (token == id.to_string()).then_some(id)
 }
 
-fn inline(text: &str, in_table: bool, attachment_url: &AttachmentUrl<'_>) -> String {
+fn inline(text: &str, in_table: bool, attachment_url: &AttachmentRender<'_>) -> String {
     inline_text(text, in_table, true, attachment_url)
 }
 
@@ -169,7 +204,7 @@ fn inline_text(
     text: &str,
     in_table: bool,
     links: bool,
-    attachment_url: &AttachmentUrl<'_>,
+    attachment_url: &AttachmentRender<'_>,
 ) -> String {
     let mut stack = vec![Emphasis::new(0, 0)];
     let bytes = text.as_bytes();
@@ -189,7 +224,9 @@ fn inline_text(
             && (bytes.get(cursor) == Some(&b'[') || bytes[cursor..].starts_with(b"!["))
             && let Some(link) = link_at(&text[cursor..])
         {
-            if let Some(path) = attachment_id(&link).and_then(|id| attachment_url(id, link.image)) {
+            if let Some(path) = attachment_id(&link)
+                .and_then(|id| attachment_url(id, link.image, &text[cursor..cursor + link.end]))
+            {
                 if link.image {
                     let _ = write!(
                         output,
@@ -364,7 +401,21 @@ fn wrapped(marker: u8, width: usize, body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_attachment_reference, render_markdown, render_markdown_with_attachments};
+    use super::{
+        contains_attachment_reference, render_markdown, render_markdown_with_attachments,
+        without_attachment_references,
+    };
+
+    #[test]
+    fn stripping_private_attachment_spans_preserves_inert_markup_and_exact_neighbors() {
+        let id = uuid::Uuid::new_v4();
+        let attachment = format!("![этот файл](attachment:{id})");
+        let source = format!(
+            "α  {attachment}  β\n\n`{attachment}`\n\n```\n{attachment}\n```\n\n> {attachment} конец"
+        );
+        let expected = format!("α    β\n\n`{attachment}`\n\n```\n{attachment}\n```\n\n>  конец");
+        assert_eq!(without_attachment_references(&source, &[id]), expected);
+    }
 
     #[test]
     fn detects_live_attachment_references_without_treating_code_as_links() {

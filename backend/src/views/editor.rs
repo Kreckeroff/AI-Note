@@ -177,6 +177,17 @@ fn page_editor(form: &PageEditorForm) -> String {
             hidden_field("attachmentRemove", &ids(&form.attachment_removed)),
         )
     });
+    let coedit_fields = form
+        .coedit_retry
+        .as_ref()
+        .map_or_else(String::new, |retry| {
+            [
+                hidden_field("coedit_lease", &retry.lease.to_string()),
+                hidden_field("coedit_version", &retry.version),
+                hidden_field("coedit_operation", &retry.operation.to_string()),
+            ]
+            .concat()
+        });
     let attachments = if !form.attachments.is_empty() {
         attachment_list(&form.attachments)
     } else {
@@ -263,7 +274,7 @@ fn page_editor(form: &PageEditorForm) -> String {
       <input type="hidden" name="revision" value="{revision}">
       <input type="hidden" name="contentFormat" value="{format}">
       <input type="hidden" name="editorMode" value="{mode}">
-      {text_base}{cover_base}{cover_input}{attachment_inputs}
+      {text_base}{cover_base}{cover_input}{attachment_inputs}{coedit_fields}
       {cover_preview}
       {error}
       <div class="page-editor-columns{conflict_columns}">

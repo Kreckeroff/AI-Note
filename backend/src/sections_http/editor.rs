@@ -9,14 +9,15 @@ use super::{
 };
 use crate::{
     db::{
-        Attachment, AttachmentPatch, CoverUpdate, PageAddress, PageContentFormat, PageCover,
-        PageUpdate, Principal, SavePageText, Store,
+        Attachment, AttachmentPatch, CoeditPublication, CoverUpdate, PageAddress,
+        PageContentFormat, PageCover, PageUpdate, Principal, SavePageText, Store,
     },
     http::{self, Form, FormError, html, plain, redirect},
+    identity::session_digest,
     markdown::{render_markdown, render_markdown_with_attachments},
     sections::{
-        CoverView, PageAttachmentView, PageEditConflict, PageEditorForm, PageEditorMode,
-        PageReading,
+        CoeditRetry, CoverView, PageAttachmentView, PageEditConflict, PageEditorForm,
+        PageEditorMode, PageReading,
     },
     text::{markdown_to_text, normalize_line_endings, text_to_markdown},
     views,
@@ -34,6 +35,12 @@ const OPEN_FORM: &str = "Откройте редактор страницы в �
 const DENIED: &str = "У вас нет права сохранять текст этой страницы.";
 const UNAVAILABLE: &str = "Не удалось сохранить текст. Попробуйте снова.";
 const CONFLICT: &str = "Текст страницы изменился. Сравните его со своим черновиком.";
+const COEDIT_CONFLICT: &str =
+    "Общий черновик изменился. Сверьте свой текст с текущим черновиком перед публикацией.";
+const COEDIT_LEASE: &str =
+    "Допуск к общему черновику обновился. Проверьте правки в новом сеансе редактирования.";
+const COEDIT_OPERATION: &str =
+    "Эта попытка сохранения уже связана с другой версией. Проверьте текущий черновик.";
 const COVER_CONFLICT: &str =
     "Страница изменилась. Сравните опубликованный вариант со своим черновиком.";
 const INVALID_COVER: &str = "Не удалось выбрать обложку. Выберите её снова.";
@@ -91,6 +98,27 @@ fn attachment_ids(value: &str) -> Result<Vec<Uuid>, ()> {
     Ok(result)
 }
 
+fn coedit_fields(form: &Form) -> Result<Option<CoeditRetry>, ()> {
+    let lease = form.field("coedit_lease").map_err(|_| ())?;
+    let version = form.field("coedit_version").map_err(|_| ())?;
+    let operation = form.field("coedit_operation").map_err(|_| ())?;
+    match (lease, version, operation) {
+        (None, None, None) => Ok(None),
+        (Some(lease), Some(version), Some(operation)) => {
+            let parsed = version.parse::<i64>().map_err(|_| ())?;
+            if parsed < 0 || parsed.to_string() != version {
+                return Err(());
+            }
+            Ok(Some(CoeditRetry {
+                lease: canonical_uuid(lease).ok_or(())?,
+                version: version.to_owned(),
+                operation: canonical_uuid(operation).ok_or(())?,
+            }))
+        }
+        _ => Err(()),
+    }
+}
+
 struct Submission {
     text: String,
     source: String,
@@ -105,6 +133,7 @@ struct Submission {
     cover: Option<PageCover>,
     cover_base: Option<PageCover>,
     attachments: Option<AttachmentChanges>,
+    coedit: Option<CoeditRetry>,
 }
 
 impl From<Form> for Submission {
@@ -173,6 +202,7 @@ impl From<Form> for Submission {
             _ => Err(()),
         };
         let attachments = AttachmentChanges::parse(&form);
+        let coedit = coedit_fields(&form);
         let error = if version.is_none() {
             Some("Не удалось проверить версию. Скопируйте черновик и откройте редактор снова.")
         } else if !matches!(submitted_text, Ok(Some(_)))
@@ -189,6 +219,8 @@ impl From<Form> for Submission {
             Some(INVALID_COVER)
         } else if attachments.is_err() {
             Some(INVALID_ATTACHMENTS)
+        } else if coedit.is_err() || plain_post && coedit.as_ref().is_ok_and(Option::is_some) {
+            Some(COEDIT_LEASE)
         } else {
             None
         };
@@ -206,13 +238,16 @@ impl From<Form> for Submission {
             cover: cover.unwrap_or_default(),
             cover_base: cover_base.unwrap_or_default(),
             attachments: attachments.unwrap_or_default(),
+            coedit: coedit.unwrap_or_default(),
         }
     }
 }
 
 impl Submission {
     fn update(&self) -> PageUpdate<'_> {
-        if self.text_unchanged {
+        if self.coedit.is_some() {
+            PageUpdate::Source(&self.source, self.format)
+        } else if self.text_unchanged {
             PageUpdate::Keep
         } else if self.plain_post {
             PageUpdate::PlainText(&self.text)
@@ -276,6 +311,7 @@ impl Submission {
                 .map(|draft| attachment_draft_path(route.tenant, route.space, page, draft)),
             attachment_added,
             attachment_removed,
+            coedit_retry: None,
         }
     }
 }
@@ -425,6 +461,7 @@ pub(super) async fn open(
             attachment_upload_to: Some(attachment_draft_path(route.tenant, route.space, id, draft)),
             attachment_added: Vec::new(),
             attachment_removed: Vec::new(),
+            coedit_retry: None,
         });
     } else {
         let (text, rendered_html) = match current.format {
@@ -466,6 +503,8 @@ enum SaveFailure {
     AttachmentReferences,
     Forbidden,
     Conflict,
+    CoeditConflict(String, PageContentFormat),
+    CoeditRejected(&'static str),
 }
 
 pub(super) async fn submit(
@@ -477,6 +516,7 @@ pub(super) async fn submit(
     request: Request,
 ) -> Response {
     let route = nav.route;
+    let session = session_digest(request.headers());
     let input = match read_submission(origin, request).await {
         Ok(input) => input,
         Err(error) => {
@@ -486,8 +526,19 @@ pub(super) async fn submit(
             return error.response();
         }
     };
+    let permit = input.coedit.as_ref().and_then(|retry| {
+        Some(CoeditPublication {
+            lease: retry.lease,
+            session: session?,
+            version: retry.version.parse().ok()?,
+            operation: retry.operation,
+            cover_base: input.cover.and(input.cover_base),
+        })
+    });
     let failure = if let Some(error) = input.error {
         SaveFailure::Invalid(error)
+    } else if input.coedit.is_some() && permit.is_none() {
+        SaveFailure::CoeditRejected(COEDIT_LEASE)
     } else {
         let revision = input
             .version
@@ -499,23 +550,24 @@ pub(super) async fn submit(
             .as_ref()
             .and_then(AttachmentChanges::patch);
         let save = async {
-            match patch {
-                Some(patch) => {
-                    store
-                        .save_page_with_attachments(
-                            &address,
-                            revision,
-                            input.update(),
-                            cover,
-                            Some(patch),
-                        )
-                        .await
-                }
-                None => {
-                    store
-                        .save_page(&address, revision, input.update(), cover)
-                        .await
-                }
+            if let Some(permit) = permit {
+                store
+                    .publish_coedit(&address, revision, input.update(), cover, patch, permit)
+                    .await
+            } else if let Some(patch) = patch {
+                store
+                    .save_page_with_attachments(
+                        &address,
+                        revision,
+                        input.update(),
+                        cover,
+                        Some(patch),
+                    )
+                    .await
+            } else {
+                store
+                    .save_page(&address, revision, input.update(), cover)
+                    .await
             }
         };
         match timeout(SAVE_TIMEOUT, save).await {
@@ -534,6 +586,13 @@ pub(super) async fn submit(
                     current.content_revision
                 );
                 SaveFailure::Conflict
+            }
+            Ok(Ok(SavePageText::CoeditConflict(source, format))) => {
+                SaveFailure::CoeditConflict(source, format)
+            }
+            Ok(Ok(SavePageText::CoeditLeaseExpired)) => SaveFailure::CoeditRejected(COEDIT_LEASE),
+            Ok(Ok(SavePageText::CoeditOperationConflict)) => {
+                SaveFailure::CoeditRejected(COEDIT_OPERATION)
             }
             Ok(Ok(SavePageText::InvalidCover)) => SaveFailure::Invalid(INVALID_COVER),
             Ok(Ok(SavePageText::InvalidAttachments)) => SaveFailure::Invalid(INVALID_ATTACHMENTS),
@@ -590,6 +649,9 @@ async fn render_failure(
         current.effective_role.clone()
     });
     if !current.can_edit {
+        if input.coedit.is_some() {
+            return redirect(&return_to(nav, id));
+        }
         failure = SaveFailure::Forbidden;
     }
     let (status, error, conflict, files) = match failure {
@@ -618,6 +680,24 @@ async fn render_failure(
             )
         }
         SaveFailure::Forbidden => (StatusCode::FORBIDDEN, DENIED, None, Vec::new()),
+        SaveFailure::CoeditRejected(reason) => {
+            (StatusCode::CONFLICT, reason, None, current.attachments)
+        }
+        SaveFailure::CoeditConflict(source, format) => (
+            StatusCode::CONFLICT,
+            COEDIT_CONFLICT,
+            Some(PageEditConflict {
+                text: match format {
+                    PageContentFormat::Literal => markdown_to_text(&source),
+                    PageContentFormat::Markdown => source.clone(),
+                },
+                source,
+                content_format: format,
+                revision: current.content_revision.to_string(),
+                cover: cover_view(route, id, current.cover),
+            }),
+            current.attachments,
+        ),
         SaveFailure::Conflict => (
             StatusCode::CONFLICT,
             if input.cover.is_some()
@@ -656,7 +736,7 @@ async fn render_failure(
 }
 
 fn unavailable_draft(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
-    if input.plain_post {
+    if input.plain_post || input.coedit.is_some() {
         return not_found(nav.route.target);
     }
     let form = input.editor_form(
@@ -749,8 +829,10 @@ fn retry_with_attachments(
     } else {
         UNAVAILABLE
     };
+    let permit = input.coedit.clone();
     let mut form = input.editor_form(nav, id, None, error, None, true);
     form.attachments = files;
+    form.coedit_retry = permit;
     html(
         StatusCode::SERVICE_UNAVAILABLE,
         views::page_edit_retry(&form),
@@ -760,6 +842,34 @@ fn retry_with_attachments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coedit_form_preserves_complete_exact_permit_and_rejects_partial_inputs() {
+        let lease = "11111111-1111-1111-1111-111111111111";
+        let operation = "22222222-2222-2222-2222-222222222222";
+        let body = format!(
+            "revision=2&text=typed&contentFormat=markdown&coedit_lease={lease}&coedit_operation={operation}"
+        );
+        for input in [
+            body.clone(),
+            format!("{body}&coedit_version=01"),
+            format!("{body}&coedit_version=0&coedit_version=1"),
+        ] {
+            let input = Submission::from(Form::from_query(&input));
+            assert_eq!(input.error, Some(COEDIT_LEASE));
+            assert_eq!(input.source, "typed");
+        }
+        let input = Submission::from(Form::from_query(&format!("{body}&coedit_version=0")));
+        assert!(input.error.is_none());
+        let permit = input.coedit.as_ref().unwrap();
+        assert_eq!(permit.version, "0");
+        assert_eq!(permit.lease.to_string(), lease);
+        assert_eq!(permit.operation.to_string(), operation);
+        assert!(matches!(
+            input.update(),
+            PageUpdate::Source("typed", PageContentFormat::Markdown)
+        ));
+    }
 
     #[test]
     fn attachment_patch_is_bounded_canonical_and_preserved_for_retry() {

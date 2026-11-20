@@ -13,6 +13,7 @@ use axum::{
 use tokio::net::TcpListener;
 
 use crate::{
+    coedit_presence::PresenceTracker,
     db::Store,
     external_sharing::{SharingDelivery, private_address, sharing_error},
     http::{self, Form, FormError, html, plain, redirect},
@@ -31,6 +32,7 @@ struct Server {
     identity: Identity,
     registration: Option<Registration>,
     sharing: SharingDelivery,
+    presence: PresenceTracker,
     host: String,
     origin: String,
 }
@@ -55,6 +57,7 @@ pub(crate) async fn run(
         identity: Identity::new(),
         registration,
         sharing,
+        presence: PresenceTracker::default(),
         host,
         origin,
     });
@@ -197,6 +200,7 @@ impl Server {
                 &self.store,
                 &self.identity,
                 &self.sharing,
+                &self.presence,
                 &self.origin,
                 request,
             )
@@ -494,6 +498,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -634,6 +639,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -934,6 +940,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -965,6 +972,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1002,6 +1010,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1062,6 +1071,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1106,6 +1116,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1174,6 +1185,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });
@@ -1318,6 +1330,7 @@ mod tests {
             identity: Identity::new(),
             registration: None,
             sharing: SharingDelivery::disabled(),
+            presence: PresenceTracker::default(),
             host: "localhost:4125".to_owned(),
             origin: "http://localhost:4125".to_owned(),
         });

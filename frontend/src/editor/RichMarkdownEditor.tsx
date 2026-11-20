@@ -27,7 +27,7 @@ export type RichMarkdownEditorHandle = {
 type EditorProps = {
   source: string;
   legacy: boolean;
-  onChange(change: EditorChange, before: SourceRange, kind: DraftEditKind): void;
+  onChange(change: EditorChange, before: SourceRange, kind: DraftEditKind): void | boolean;
   onHistory(direction: DraftHistoryDirection): void;
   onPasteMarkdown(range: SourceRange): void;
   onInsertAttachmentImage?: (range: SourceRange) => void;
@@ -36,6 +36,7 @@ type EditorProps = {
   describedBy?: string;
   id?: string;
   ref?: Ref<RichMarkdownEditorHandle>;
+  onCompositionChange?(active: boolean): void;
 };
 
 const runSelector = '[data-markdown-run]';
@@ -124,7 +125,7 @@ function selectSource(root: HTMLElement, model: MarkdownDocument, range: SourceR
 type InsertionKind = Parameters<typeof insertVisual>[4];
 
 export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPasteMarkdown, onInsertAttachmentImage,
-  attachments, readOnly, describedBy, id, ref}: EditorProps) {
+  attachments, readOnly, describedBy, id, ref, onCompositionChange}: EditorProps) {
   const editor = useRef<HTMLDivElement>(null);
   const selection = useRef<SourceRange | undefined>(undefined);
   const pending = useRef<{change: EditorChange; refreshMenu: boolean} | undefined>(undefined);
@@ -152,7 +153,11 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
     }
     selection.current = change;
     pending.current = {change, refreshMenu};
-    onChange(change, before, kind);
+    if (onChange(change,before,kind)===false) {
+      pending.current=undefined;
+      selection.current=before;
+      if (editor.current) selectSource(editor.current,model,before);
+    }
   }
 
   function focus() {
@@ -393,6 +398,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       if (!belongsToEditor(root, event.target)) return;
       setMenu(undefined);
       composition.current = {range: selectedRange(root!, model) ?? currentSelection(), source, legacy};
+      onCompositionChange?.(true);
     }
 
     function compositionEnd(event: CompositionEvent) {
@@ -405,6 +411,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
         insert(captured.range, event.data, 'text');
       }
       setRepair(old => old + 1);
+      onCompositionChange?.(false);
       window.setTimeout(() => { committedComposition.current = undefined; }, 0);
     }
 

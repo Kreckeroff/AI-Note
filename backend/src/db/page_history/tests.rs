@@ -506,3 +506,412 @@ async fn legacy_cover_is_archived_before_the_first_replacement(pool: PgPool) -> 
     assert!(baseline.recorded_at.is_none());
     Ok(())
 }
+
+#[sqlx::test(migrator = "crate::db::MIGRATIONS")]
+#[ignore = "requires an isolated PostgreSQL DATABASE_URL with database creation privileges"]
+async fn publication_notices_follow_real_revisions_and_current_access(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::db::page_discussion::NotificationTarget;
+
+    let f = setup(pool).await?;
+    let store = &f.store;
+    assert_eq!(store.page_watch(&f.viewer).await?, Some(false));
+    assert_eq!(store.set_page_watch(&f.viewer, true).await?, Some(true));
+    assert_eq!(store.set_page_watch(&f.viewer, true).await?, Some(true));
+    assert_eq!(store.set_page_watch(&f.owner, true).await?, Some(true));
+    assert!(
+        store
+            .discussion_notifications(f.viewer.account, 0)
+            .await?
+            .notifications
+            .is_empty()
+    );
+
+    for _ in 0..2 {
+        assert!(matches!(
+            store
+                .save_page(
+                    &f.owner,
+                    1,
+                    PageUpdate::Source("Пилот", PageContentFormat::Markdown),
+                    CoverUpdate::Keep
+                )
+                .await?,
+            SavePageText::Saved
+        ));
+    }
+    let notices = store
+        .discussion_notifications(f.viewer.account, 0)
+        .await?
+        .notifications;
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].target,
+        NotificationTarget::Publication {
+            title: "План".into(),
+            revision: 2
+        }
+    );
+    assert!(
+        store
+            .discussion_notifications(f.owner.account, 0)
+            .await?
+            .notifications
+            .is_empty()
+    );
+
+    sqlx::query("DELETE FROM space_grants WHERE (tenant_id,space_id,account_id)=($1,$2,$3)")
+        .bind(f.viewer.tenant)
+        .bind(f.viewer.space)
+        .bind(f.viewer.account)
+        .execute(&store.0)
+        .await?;
+    assert_eq!(store.page_watch(&f.viewer).await?, None);
+    assert_eq!(store.set_page_watch(&f.viewer, true).await?, None);
+    assert!(
+        store
+            .discussion_notifications(f.viewer.account, 0)
+            .await?
+            .notifications
+            .is_empty()
+    );
+    assert!(matches!(
+        store
+            .save_page(
+                &f.owner,
+                2,
+                PageUpdate::Source("Пилот 2", PageContentFormat::Markdown),
+                CoverUpdate::Keep
+            )
+            .await?,
+        SavePageText::Saved
+    ));
+    sqlx::query("INSERT INTO space_grants VALUES ($1,$2,$3,'viewer')")
+        .bind(f.viewer.tenant)
+        .bind(f.viewer.space)
+        .bind(f.viewer.account)
+        .execute(&store.0)
+        .await?;
+
+    for _ in 0..2 {
+        assert!(matches!(
+            store.restore_page_revision(&f.editor, 2, 3).await?,
+            RestorePageRevision::Saved(4)
+        ));
+    }
+    let mut unsubscribe = store.0.begin().await?;
+    assert!(
+        crate::db::page_access::lock_page_for_change(&mut unsubscribe, &f.viewer)
+            .await?
+            .is_some_and(|access| access.can_read)
+    );
+    sqlx::query(
+        "DELETE FROM page_watchers WHERE (tenant_id,space_id,page_id,account_id)=($1,$2,$3,$4)",
+    )
+    .bind(f.viewer.tenant)
+    .bind(f.viewer.space)
+    .bind(f.viewer.page)
+    .bind(f.viewer.account)
+    .execute(&mut *unsubscribe)
+    .await?;
+    let (save, committed) = tokio::join!(
+        store.save_page(
+            &f.owner,
+            4,
+            PageUpdate::Source("Пилот 3", PageContentFormat::Markdown),
+            CoverUpdate::Keep
+        ),
+        unsubscribe.commit(),
+    );
+    committed?;
+    assert!(matches!(save?, SavePageText::Saved));
+    assert_eq!(store.page_watch(&f.viewer).await?, Some(false));
+    let notices = store
+        .discussion_notifications(f.viewer.account, 0)
+        .await?
+        .notifications;
+    let target = |revision| NotificationTarget::Publication {
+        title: "План".into(),
+        revision,
+    };
+    assert_eq!(notices.len(), 2);
+    for revision in [2, 4] {
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.target == target(revision))
+        );
+    }
+    let own_notices = store
+        .discussion_notifications(f.owner.account, 0)
+        .await?
+        .notifications;
+    assert_eq!(own_notices.len(), 1);
+    assert_eq!(own_notices[0].target, target(4));
+    Ok(())
+}
+
+#[sqlx::test(migrator = "crate::db::MIGRATIONS")]
+#[ignore = "requires an isolated PostgreSQL DATABASE_URL with database creation privileges"]
+async fn guarded_publication_keeps_team_changes_and_replays_exactly_once(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::db::{CoeditPublication, NewSession, coediting::CoeditResult};
+
+    let f = setup(pool).await?;
+    let store = &f.store;
+    let session = [9_u8; 32];
+    store
+        .add_session(
+            f.owner.account,
+            &NewSession {
+                digest: session.to_vec(),
+                created_at: crate::clock::now_ms(),
+                expires_at: crate::clock::now_ms() + 60_000,
+            },
+        )
+        .await?;
+    let CoeditResult::Saved(open) = store.open_coedit(&f.owner, &session).await? else {
+        anyhow::bail!("coedit did not open");
+    };
+    let input = serde_json::from_value(serde_json::json!({
+        "lease": open.lease,
+        "operationId": Uuid::new_v4(),
+        "version": open.version.to_string(),
+        "start": 0,
+        "end": 0,
+        "text": "Общий черновик",
+        "format": "markdown"
+    }))?;
+    let CoeditResult::Saved(draft) = store.apply_coedit(&f.owner, &session, input).await? else {
+        anyhow::bail!("coedit did not apply");
+    };
+    let operation = Uuid::new_v4();
+    let permit = |version| CoeditPublication {
+        session,
+        lease: open.lease,
+        version,
+        operation,
+        cover_base: None,
+    };
+    let guarded_save = |version, source| {
+        store.publish_coedit(
+            &f.owner,
+            open.published_revision,
+            PageUpdate::Source(source, PageContentFormat::Markdown),
+            CoverUpdate::Keep,
+            None,
+            permit(version),
+        )
+    };
+    assert!(matches!(
+        guarded_save(open.version, &draft.source).await?,
+        SavePageText::CoeditConflict(..)
+    ));
+    assert!(matches!(
+        guarded_save(draft.version, "Старый текст").await?,
+        SavePageText::CoeditConflict(..)
+    ));
+    assert!(matches!(
+        store
+            .save_page(
+                &f.editor,
+                open.published_revision,
+                PageUpdate::Source("Локальная правка", PageContentFormat::Markdown),
+                CoverUpdate::Keep
+            )
+            .await?,
+        SavePageText::CoeditConflict(..)
+    ));
+    assert_eq!(
+        store.page_text(&f.viewer).await?.unwrap().source,
+        open.source
+    );
+    for _ in 0..2 {
+        assert!(matches!(
+            guarded_save(draft.version, &draft.source).await?,
+            SavePageText::Saved
+        ));
+    }
+    assert!(matches!(
+        guarded_save(draft.version, "Повтор с изменениями").await?,
+        SavePageText::CoeditOperationConflict
+    ));
+    let published = store.page_text(&f.viewer).await?.unwrap();
+    assert_eq!(published.source, draft.source);
+    assert_eq!(published.content_revision, open.published_revision + 1);
+
+    let file = Uuid::new_v4();
+    let upload = Uuid::new_v4();
+    assert!(matches!(
+        store
+            .stage_attachment(&f.owner, upload, file, "Черновик.md", None, b"# Note")
+            .await?,
+        crate::db::StageAttachment::Saved(_)
+    ));
+    let lookup = crate::db::AttachmentLookup::Draft {
+        draft: upload,
+        id: file,
+    };
+    assert!(store.attachment_body(&f.editor, lookup).await?.is_none());
+    let CoeditResult::Saved(after) = store.coedit_state(&f.owner, &session, open.lease).await?
+    else {
+        anyhow::bail!("coedit did not advance to publication");
+    };
+    let marker = format!("[Заметка](attachment:{file})");
+    let shared_attempt = serde_json::from_value(serde_json::json!({
+        "lease": after.lease,
+        "operationId": Uuid::new_v4(),
+        "version": after.version.to_string(),
+        "start": 0,
+        "end": 0,
+        "text": marker,
+        "format": "markdown"
+    }))?;
+    assert!(matches!(
+        store
+            .apply_coedit(&f.owner, &session, shared_attempt)
+            .await?,
+        CoeditResult::Invalid
+    ));
+    let source = format!("{marker}{}", after.source);
+    let operation = Uuid::new_v4();
+    let patch = crate::db::AttachmentPatch {
+        draft: upload,
+        add: &[file],
+        remove: &[],
+    };
+    for _ in 0..2 {
+        assert!(matches!(
+            store
+                .publish_coedit(
+                    &f.owner,
+                    after.published_revision,
+                    PageUpdate::Source(&source, PageContentFormat::Markdown),
+                    CoverUpdate::Keep,
+                    Some(patch),
+                    CoeditPublication {
+                        session,
+                        lease: after.lease,
+                        version: after.version,
+                        operation,
+                        cover_base: None,
+                    },
+                )
+                .await?,
+            SavePageText::Saved
+        ));
+    }
+    let published_with_file = store.page_text(&f.viewer).await?.unwrap();
+    assert_eq!(published_with_file.source, source);
+    assert_eq!(
+        published_with_file.content_revision,
+        after.published_revision + 1
+    );
+    assert_eq!(published_with_file.attachments.len(), 1);
+    assert_eq!(published_with_file.attachments[0].id, file);
+    Ok(())
+}
+
+#[sqlx::test(migrator = "crate::db::MIGRATIONS")]
+#[ignore = "requires an isolated PostgreSQL DATABASE_URL with database creation privileges"]
+async fn guarded_publication_compares_cover_even_after_text_catches_up(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::db::{CoeditPublication, NewSession, coediting::CoeditResult};
+
+    let f = setup(pool).await?;
+    let store = &f.store;
+    let owner_session = [1_u8; 32];
+    let editor_session = [2_u8; 32];
+    let now = crate::clock::now_ms();
+    for (address, session) in [(f.owner, owner_session), (f.editor, editor_session)] {
+        store
+            .add_session(
+                address.account,
+                &NewSession {
+                    digest: session.to_vec(),
+                    created_at: now,
+                    expires_at: now + 60_000,
+                },
+            )
+            .await?;
+    }
+    let CoeditResult::Saved(owner) = store.open_coedit(&f.owner, &owner_session).await? else {
+        anyhow::bail!("owner cannot open coedit");
+    };
+    let CoeditResult::Saved(editor) = store.open_coedit(&f.editor, &editor_session).await? else {
+        anyhow::bail!("editor cannot open coedit");
+    };
+    let original = store.page_text(&f.editor).await?.unwrap();
+    assert!(matches!(
+        store
+            .publish_coedit(
+                &f.owner,
+                owner.published_revision,
+                PageUpdate::Source(&owner.source, owner.format),
+                CoverUpdate::Set(PageCover::Orbit),
+                None,
+                CoeditPublication {
+                    session: owner_session,
+                    lease: owner.lease,
+                    version: owner.version,
+                    operation: Uuid::new_v4(),
+                    cover_base: Some(original.cover),
+                },
+            )
+            .await?,
+        SavePageText::Saved
+    ));
+    let CoeditResult::Saved(latest) = store
+        .coedit_state(&f.editor, &editor_session, editor.lease)
+        .await?
+    else {
+        anyhow::bail!("editor cannot catch up");
+    };
+    assert_eq!(latest.published_revision, owner.published_revision + 1);
+    let save = |selected, cover_base| {
+        store.publish_coedit(
+            &f.editor,
+            latest.published_revision,
+            PageUpdate::Source(&latest.source, latest.format),
+            CoverUpdate::Set(selected),
+            None,
+            CoeditPublication {
+                session: editor_session,
+                lease: latest.lease,
+                version: latest.version,
+                operation: Uuid::new_v4(),
+                cover_base,
+            },
+        )
+    };
+
+    assert!(matches!(
+        save(PageCover::Aurora, Some(original.cover)).await?,
+        SavePageText::Conflict(current)
+            if current.cover == PageCover::Orbit
+                && current.content_revision == latest.published_revision
+    ));
+    assert!(matches!(
+        save(PageCover::Aurora, None).await?,
+        SavePageText::InvalidCover
+    ));
+    assert!(matches!(
+        save(PageCover::Orbit, Some(original.cover)).await?,
+        SavePageText::Saved
+    ));
+    let published = store.page_text(&f.viewer).await?.unwrap();
+    assert_eq!(published.cover, PageCover::Orbit);
+    assert_eq!(published.content_revision, latest.published_revision);
+
+    assert!(matches!(
+        save(PageCover::Aurora, Some(PageCover::Orbit)).await?,
+        SavePageText::Saved
+    ));
+    let published = store.page_text(&f.viewer).await?.unwrap();
+    assert_eq!(published.cover, PageCover::Aurora);
+    assert_eq!(published.content_revision, latest.published_revision + 1);
+    Ok(())
+}

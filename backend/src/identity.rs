@@ -117,19 +117,21 @@ pub(crate) async fn identify(
     store: &Store,
     headers: &HeaderMap,
 ) -> Result<Option<Principal>, sqlx::Error> {
+    let Some(digest) = session_digest(headers) else {
+        return Ok(None);
+    };
+    store.principal(&digest, now_ms()).await
+}
+
+pub(crate) fn session_digest(headers: &HeaderMap) -> Option<[u8; 32]> {
     let mut tokens = headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|header| header.to_str().ok())
         .flat_map(|header| header.split(';'))
         .filter_map(|entry| js_trim(entry).strip_prefix("sever_session="));
-    let Some(token) = tokens.next().filter(|token| valid_token(token)) else {
-        return Ok(None);
-    };
-    if tokens.next().is_some() {
-        return Ok(None);
-    }
-    store.principal(&token_digest(token), now_ms()).await
+    let token = tokens.next().filter(|token| valid_token(token))?;
+    tokens.next().is_none().then(|| token_digest(token))
 }
 
 #[derive(Default)]

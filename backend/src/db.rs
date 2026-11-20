@@ -1,3 +1,5 @@
+pub(crate) mod coedit_presence;
+pub(crate) mod coediting;
 mod configuration;
 pub(crate) mod external_sharing;
 pub(crate) mod import;
@@ -9,6 +11,7 @@ mod page_format;
 mod page_history;
 pub(crate) mod page_sharing;
 mod page_text;
+pub(crate) mod page_watch;
 mod pages;
 mod sections;
 
@@ -19,7 +22,7 @@ pub(crate) use page_attachments::{
 pub(crate) use page_cover::{CoverUpdate, PageCover, StagePageCover};
 pub(crate) use page_format::PageContentFormat;
 pub(crate) use page_history::{PageHistory, PageRevisionSnapshot, RestorePageRevision};
-pub(crate) use page_text::{PageUpdate, SavePageText};
+pub(crate) use page_text::{CoeditPublication, PageUpdate, SavePageText};
 pub(crate) use pages::{CreatePage, CreatePageInput, Page};
 pub(crate) use sections::{CreateSection, Section, SectionTree};
 

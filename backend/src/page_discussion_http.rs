@@ -15,8 +15,8 @@ use crate::{
     db::{
         PageAddress, Store,
         page_discussion::{
-            CommentCommand, DiscussionOutcome, DiscussionStatus, MentionLookup, ReplyPage,
-            ThreadQuery, ThreadSelection,
+            CommentCommand, DiscussionOutcome, DiscussionStatus, MentionLookup, NotificationTarget,
+            ReplyPage, ThreadQuery, ThreadSelection,
         },
     },
     http::{self, Form},
@@ -258,6 +258,15 @@ struct NotificationItem {
     author: String,
     href: String,
     created_at: i64,
+    #[serde(flatten)]
+    publication: Option<PublicationItem>,
+}
+
+#[derive(Serialize)]
+struct PublicationItem {
+    kind: &'static str,
+    title: String,
+    revision: String,
 }
 
 #[derive(Serialize)]
@@ -293,11 +302,26 @@ pub(crate) async fn notifications(
         .into_iter()
         .map(|item| {
             let path = page_path(item.tenant_id, item.space_id, item.page_id);
+            let (href, publication) = match item.target {
+                NotificationTarget::Mention {
+                    thread_id,
+                    message_id,
+                } => (discussion_href(&path, thread_id, message_id), None),
+                NotificationTarget::Publication { title, revision } => (
+                    path,
+                    Some(PublicationItem {
+                        kind: "publication",
+                        title,
+                        revision: revision.to_string(),
+                    }),
+                ),
+            };
             NotificationItem {
                 id: item.id,
                 author: item.author,
-                href: discussion_href(&path, item.thread_id, item.message_id),
+                href,
                 created_at: item.created_at,
+                publication,
             }
         })
         .collect();

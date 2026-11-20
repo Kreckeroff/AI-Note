@@ -2,9 +2,9 @@ use std::fmt::Write as _;
 
 use crate::text::{escape_html as html, js_trim};
 
-use super::{AttachmentUrl, inline};
+use super::{AttachmentRender, inline};
 
-pub(super) fn render(source: &str, attachment_url: &AttachmentUrl<'_>) -> String {
+pub(super) fn render(source: &str, attachment_url: &AttachmentRender<'_>) -> String {
     let lines: Vec<_> = source.split('\n').collect();
     let mut output = String::new();
     let mut index = 0;
@@ -174,7 +174,7 @@ fn render_list<'a>(
     lines: &[&'a str],
     mut index: usize,
     mut item: ListItem<'a>,
-    attachment_url: &AttachmentUrl<'_>,
+    attachment_url: &AttachmentRender<'_>,
 ) -> usize {
     let mut frames: Vec<ListFrame> = Vec::new();
     loop {
@@ -322,7 +322,7 @@ fn render_table(
     lines: &[&str],
     start: usize,
     alignments: &[Alignment],
-    attachment_url: &AttachmentUrl<'_>,
+    attachment_url: &AttachmentRender<'_>,
 ) -> usize {
     let last = start
         + 2
@@ -361,7 +361,7 @@ fn render_table_row(
     row: &[&str],
     alignments: &[Alignment],
     header: bool,
-    attachment_url: &AttachmentUrl<'_>,
+    attachment_url: &AttachmentRender<'_>,
 ) {
     let (tag, scope) = if header {
         ("th", " scope=\"col\"")

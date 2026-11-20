@@ -96,6 +96,7 @@ export interface PageEditorForm extends PageRevision {
   error: string | null;
   conflict: PageEditConflict | null;
   canSave: boolean;
+  coeditRetry?: {lease: string; version: string; operation: string} | null;
   coverBase?: CoverValue | null;
   coverChanged?: boolean;
   coverUploadTo?: string | null;
@@ -252,6 +253,9 @@ function isPageEditorForm(value: unknown): boolean {
     (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
     (value.error === null || typeof value.error === 'string') &&
     (value.conflict === null || isPageConflict(value.conflict)) && typeof value.canSave === 'boolean' &&
+    (value.coeditRetry == null || fields(value.coeditRetry) &&
+      isAttachmentId(value.coeditRetry.lease) && isAttachmentId(value.coeditRetry.operation) &&
+      typeof value.coeditRetry.version === 'string' && /^(0|[1-9]\d{0,18})$/u.test(value.coeditRetry.version)) &&
     (value.coverBase == null || isCoverValue(value.coverBase)) &&
     (value.coverUploadTo == null || isCoverUploadPath(value.coverUploadTo)) &&
     (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
