@@ -68,7 +68,11 @@ pub(in crate::db) async fn record_publication(
     let source_matches = published == draft.source && format == draft.format();
     let dirty =
         draft.source != draft.published_source || draft.format() != draft.published_format();
-    let (source, format_in_draft, conflict) = if from_coedit || !dirty || source_matches {
+    let metadata_only =
+        !from_coedit && published == draft.published_source && format == draft.published_format();
+    let (source, format_in_draft, conflict) = if metadata_only {
+        (draft.source.clone(), draft.format(), draft.conflict()?)
+    } else if from_coedit || !dirty || source_matches {
         (published.to_string(), format, None)
     } else {
         let draft_change = difference(&draft.published_source, &draft.source);

@@ -188,7 +188,7 @@
     ctx.restore();
   }
   function mount(host,api){
-    let theme=initialTheme();
+    let theme=api.theme==='light'||api.theme==='dark'?api.theme:initialTheme();
     document.body.dataset.graphTheme=theme;
     const available=nodes.filter(n=>api.boards!==false||n.family!=='work');
     const availableKeys=new Set(available.map(n=>n.key));
@@ -228,11 +228,13 @@
       document.body.dataset.graphTheme=theme;
       palette=readPalette(root);
       updateThemeButton();
-      try{localStorage.setItem(preferenceKey,theme);}catch{/* Private storage may be unavailable. */}
-      const url=new URL(location.href);
-      url.searchParams.set('theme',theme);
-      history.replaceState(history.state,'',url);
-      api.onThemeChange?.(theme);
+      if(api.onThemeChange)api.onThemeChange(theme);
+      else {
+        try{localStorage.setItem(preferenceKey,theme);}catch{/* Private storage may be unavailable. */}
+        const url=new URL(location.href);
+        url.searchParams.set('theme',theme);
+        history.replaceState(history.state,'',url);
+      }
       schedule();
     }
     function neighbours(n){return edges.filter(([a,b])=>a===n||b===n).map(([a,b])=>a===n?b:a).filter(x=>x.born<=time);}

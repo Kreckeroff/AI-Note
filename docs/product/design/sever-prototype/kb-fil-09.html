@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Север · Внешний блок</title>
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="page-sharing.css">
+  <style>
+    .embed-dock .dock-inner { max-width: 100%; }
+    @media (max-width: 760px) {
+      .embed-dock .dock-inner { grid-column: 1 / -1; justify-self: center; }
+    }
+    .embed-page { padding: clamp(20px, 5vw, 64px) 0; }
+    .embed-page .article { width: min(100% - 74px, 730px); margin-top: 0; }
+    .embed-page .editor-title { margin: 12px 0 8px; }
+    .embed-toolbar, .embed-actions, .embed-file-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .embed-toolbar { position: relative; margin: 8px 0; }
+    .embed-toolbar kbd { font: 11px var(--mono); border: 1px solid var(--strong-line); padding: 2px 5px; border-radius: 4px; }
+    .embed-commands { position: absolute; inset-block-start: calc(100% + 4px); inset-inline-start: 0; z-index: 4; }
+    .embed-popover { padding: 5px; border: 1px solid var(--strong-line); border-radius: 9px; background: var(--surface); box-shadow: 0 10px 28px var(--shadow); }
+    .embed-content { display: grid; gap: 13px; margin: 20px 0; }
+    .embed-file { display: grid; grid-template-columns: minmax(0, 1fr) auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-width: 0; }
+    .embed-file-head { grid-column: 1; grid-row: 2; min-height: 40px; justify-content: space-between; padding: 8px 10px; }
+    .embed-origin { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+    .embed-origin > span { color: var(--accent); font-size: 18px; flex: none; }
+    .embed-file details { position: relative; }
+    .embed-file summary { list-style: none; cursor: pointer; }
+    .embed-file details .embed-popover { position: absolute; inset-inline-end: 0; z-index: 3; display: grid; min-width: 146px; }
+    .embed-slot { grid-column: 1 / -1; grid-row: 1; border-radius: 9px 9px 0 0; border-block-end: 1px solid var(--line); text-align: center; padding: 12px; }
+    .embed-frame { min-height: clamp(165px, 38vw, 300px); background: var(--background); }
+    .embed-footer { grid-column: 2; grid-row: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 7px 10px; }
+    .embed-footer span { flex-basis: 100%; }
+    .embed-footer a { text-underline-offset: 3px; }
+    .embed-public-note { border-inline-start: 2px solid var(--accent); padding-inline-start: 10px; margin-block: 14px; }
+    .embed-demo-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .embed-markdown { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; }
+    .embed-dialog { width: min(560px, calc(100% - 24px)); color: var(--ink); }
+    .embed-dialog form { min-height: 0; display: flex; flex-direction: column; }
+    .embed-dialog textarea { min-height: 124px; resize: vertical; font: 13px/1.5 var(--mono); }
+    .embed-dialog .dialog-body { display: grid; gap: 8px; }
+    .embed-dialog .embed-actions { justify-content: flex-end; }
+    .embed-error { color: var(--work); }
+    [data-view="public"] .sharing-tree { display: none; }
+    .sharing-workspace[data-view="public"] { grid-template-columns: minmax(0, 1fr); }
+    @media (max-width: 650px) {
+      .embed-page .article { width: calc(100% - 25px); }
+      .embed-file { grid-template-columns: minmax(0, 1fr); }
+      .embed-footer { grid-column: 1; grid-row: 3; padding-block-start: 0; }
+    }
+  </style>
+  <script type="module" src="page-embed.mjs"></script>
+</head>
+<body class="workspace-shell sharing-demo">
+  <header class="sharing-top embed-dock">
+    <div class="dock-inner">
+      <div class="dock-context" role="group" aria-label="Организация и пространство">
+        <span class="dock-tenant"><span class="brand-mark" aria-hidden="true">✧</span><span class="dock-tenant-name">Север</span></span>
+        <span class="dock-context-divider" aria-hidden="true">›</span>
+        <span class="dock-space"><span class="dock-space-name">Документация команды</span></span>
+      </div>
+    </div>
+    <div class="sharing-demo-controls">
+      <label for="role">Роль в макете</label>
+      <select class="field compact" id="role">
+        <option value="editor">Редактор</option>
+        <option value="reader">Читатель</option>
+        <option value="guest">Именованный гость</option>
+        <option value="public">По публичной ссылке</option>
+      </select>
+    </div>
+  </header>
+  <main class="sharing-workspace" id="workspace" data-view="editor">
+    <aside class="sidebar sharing-tree" aria-label="Дерево пространства">
+      <div class="space-card"><strong>Документация команды</strong></div>
+      <div class="tree-item"><span>Подготовка запуска</span></div>
+      <div class="tree-item" aria-current="page"><span>Материалы запуска</span></div>
+      <div class="tree-item"><span>Чек-лист релиза</span></div>
+    </aside>
+    <div class="doc-center embed-page">
+      <article class="article" id="document">
+        <p class="muted small" id="breadcrumb">Подготовка запуска</p>
+        <h1 class="editor-title">Материалы запуска</h1>
+        <div id="toolbar" class="editor-toolbar embed-toolbar" aria-label="Форматирование Markdown">
+          <button type="button" class="btn" id="insert-command" aria-expanded="false" aria-controls="commands">Вставить блок <kbd>/</kbd></button>
+          <button type="button" class="btn" id="undo" disabled>Отменить правку</button>
+          <span class="spacer" aria-hidden="true"></span><button type="button" class="btn ghost" id="markdown-toggle" aria-pressed="false">Исходник</button>
+          <div id="commands" class="embed-commands embed-popover" hidden><button type="button" class="btn ghost" id="embed-command">Встроить</button></div>
+        </div>
+        <pre id="markdown" class="embed-markdown" hidden></pre>
+        <div class="article-body" id="body-preview">
+          <p id="intro">Материалы для подготовки к пилоту. Здесь собраны инструкции и ссылки для команды.</p>
+          <div id="blocks" class="embed-content" contenteditable="false"></div>
+          <p id="last-paragraph" tabindex="-1">Если появятся вопросы, обсудим их на встрече команды.</p>
+        </div>
+        <p class="embed-public-note muted small" id="public-note" hidden>Публичная ссылка включена. После сохранения адрес источника будет доступен всем, у кого есть эта ссылка.</p>
+        <div class="edit-footer" id="edit-footer"><button type="button" class="btn primary" id="publish">Сохранить</button></div>
+        <p class="embed-demo-actions small muted" id="demo-actions" hidden><button type="button" class="btn" id="public-toggle">Отозвать публичную ссылку</button></p>
+      </article>
+      <article class="article" id="denied" hidden><h1>Страница недоступна</h1><p class="muted">Публичная ссылка больше не действует.</p></article>
+      <p class="article small muted sr-only" role="status" id="status"></p>
+    </div>
+  </main>
+  <dialog id="editor" class="workspace-dialog embed-dialog" aria-labelledby="editor-title">
+    <form id="form" novalidate>
+      <header class="dialog-header"><h2 id="editor-title">Вставить внешний блок</h2></header>
+      <div class="dialog-body">
+        <label for="embed-input">Ссылка или код встраивания</label>
+        <textarea class="field" id="embed-input" required spellcheck="false" rows="4" placeholder="https://…" aria-describedby="input-help input-error"></textarea>
+        <p class="muted small" id="input-help">Вставьте HTTPS-адрес или код iframe, который выдал сайт.</p>
+        <p class="embed-error small" id="input-error" role="alert" hidden></p>
+        <p><button type="button" class="btn ghost" id="example">Подставить пример</button></p>
+      </div>
+      <footer class="space-dialog-footer embed-actions"><button type="button" class="btn" id="cancel">Отмена</button><button type="submit" class="btn primary" id="apply">Вставить</button></footer>
+    </form>
+  </dialog>
+  <template id="block-template">
+    <section class="embed-file" aria-label="Внешний блок">
+      <div class="embed-file-head">
+        <div class="embed-origin"><span aria-hidden="true">↗</span><strong data-host></strong></div>
+        <details data-editor-only>
+          <summary class="btn icon" aria-label="Действия с блоком">···</summary>
+          <div class="embed-popover"><button type="button" class="btn ghost" data-edit>Изменить адрес</button><button type="button" class="btn ghost danger" data-remove>Удалить блок</button></div>
+        </details>
+      </div>
+      <div class="embed-slot video-poster" data-placeholder>
+        <span class="video-icon" aria-hidden="true">↗</span>
+        <button type="button" class="btn primary" data-load>Загрузить</button>
+      </div>
+      <div class="embed-slot embed-frame video-poster" data-frame hidden><p class="muted small" data-frame-content></p></div>
+      <div class="embed-footer small"><a data-external target="_blank" rel="noopener noreferrer">Открыть источник ↗</a><button type="button" class="btn ghost" data-hide hidden>Скрыть</button><span class="muted" data-help hidden>Если блок не открывается, откройте источник.</span></div>
+    </section>
+  </template>
+</body>
+</html>

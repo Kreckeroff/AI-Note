@@ -1,37 +1,10 @@
-const paths = {
-  north: 'M12 2l2.8 7.2L22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8L12 2z M12 9v6m-3-3h6',
-  add: 'M12 5v14 M5 12h14',
-  folder: 'M3 7V5a1 1 0 011-1h5l2 2h9a1 1 0 011 1v12H3z',
-  file: 'M5 3h9l5 5v13H5z M14 3v5h5 M8 12h8 M8 16h8',
-  image: 'M3 4h18v16H3z M3 16l5-5 4 4 3-3 6 6 M15 8h.01',
-  lock: 'M5 10h14v11H5z m3 0V7a4 4 0 118 0v3',
-  layers: 'm3 8 9-5 9 5-9 5-9-5zm0 5 9 5 9-5m-18 5 9 5 9-5',
-  back: 'M20 12H5m6 6-6-6 6-6',
-  close: 'm6 6 12 12M6 18 18 6',
-  upload: 'M12 16V3M7 8l5-5 5 5M4 16v4h16v-4',
-  edit: 'm4 15 11-11 5 5L9 20H4v-5zm9-9 5 5',
-  home: 'm3 10 9-7 9 7v10H3zm6 10v-6h6v6',
-  down: 'm6 9 6 6 6-6',
-  next: 'm9 6 6 6-6 6',
-  search: 'M20 20l-4-4 M18 11a7 7 0 11-14 0 7 7 0 0114 0z',
-  list: 'M9 6h12 M9 12h12 M9 18h12 M4 6h.01 M4 12h.01 M4 18h.01',
-  code: 'm8 6-6 6 6 6m8-12 6 6-6 6m-2-15-4 18',
-  quote: 'M3 6h7v6H6c0 3-1 4-3 5m11-11h7v6h-4c0 3-1 4-3 5',
-  ordered: 'M9 6h12 M9 12h12 M9 18h12 M3 4l2-1v5 M3 11h3l-3 4h3 M3 18h3l-2 2h2v2H3',
-  check: 'M4 4h16v16H4z m4 8 3 3 5-6',
-  rule: 'M4 12h16',
-  table: 'M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16',
-  clipboard: 'M8 5H5v16h14V5h-3 M8 3h8v5H8z M8 12h8m-8 4h5',
-  context: 'M3 4h18v16H3z M14 4v16 M17 8h1 M17 12h1',
-  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4',
-  history: 'M4 11a8 8 0 1 1 2 6 M4 6v5h5 M12 8v4l3 2',
-};
+import {workspaceIcons} from './workspaceIcons';
 
-export function Icon({name = 'north'}: {name?: keyof typeof paths}) {
+export function Icon({name = 'north'}: {name?: keyof typeof workspaceIcons}) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d={paths[name]} />
+      strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+      <path d={workspaceIcons[name]} />
     </svg>
   );
 }

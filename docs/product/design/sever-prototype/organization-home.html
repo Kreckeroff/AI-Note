@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Север · Главная организации</title>
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="space-catalog.css">
+  <link rel="stylesheet" href="organization-home.css?v=1.1">
+</head>
+<body>
+  <a class="skip-link" href="#main">К содержимому</a>
+  <aside class="review-strip" aria-label="Управление макетом">
+    <span>Макет общей главной · 1.1</span>
+    <div class="review-controls">
+      <label for="scenario">Посмотреть от лица</label>
+      <select class="field" id="scenario">
+        <option value="superadmin">Суперадминистратор</option>
+        <option value="admin">Администратор</option>
+        <option value="member">Участник</option>
+      </select>
+      <button class="btn ghost" id="theme" type="button">Светлая тема</button>
+    </div>
+  </aside>
+
+  <header class="org-dock">
+    <div class="org-context">
+      <details class="org-picker" id="organization-picker">
+        <summary class="org-control">
+          <span class="brand-mark" id="organization-mark"></span>
+          <span id="current-organization"></span>
+          <span data-icon="down"></span>
+        </summary>
+        <div class="org-popup" id="organizations" aria-label="Выбор организации"></div>
+      </details>
+      <span class="org-separator" data-icon="chevron"></span>
+      <details class="org-picker" id="space-picker">
+        <summary class="org-control">
+          <span data-icon="folder"></span>
+          <span>Выбрать пространство</span>
+          <span data-icon="down"></span>
+        </summary>
+        <div class="org-popup" id="spaces" aria-label="Выбор пространства"></div>
+      </details>
+    </div>
+    <nav class="org-nav" aria-label="Основная навигация">
+      <a href="#home" data-view="home"><span data-icon="home"></span>Главная</a>
+      <a id="catalog-link" href="kb-spc-02.html#spaces"><span data-icon="layers"></span>Пространства</a>
+      <a href="#settings" data-view="settings" data-management><span data-icon="settings"></span>Настройки</a>
+    </nav>
+    <span class="org-profile"><span class="avatar" id="profile-avatar" aria-hidden="true"></span><span id="profile-name"></span></span>
+  </header>
+
+  <main class="org-main" id="main" tabindex="-1"></main>
+  <p id="feedback" class="sr-only" role="status" aria-live="polite"></p>
+  <dialog class="workspace-dialog" id="invitation-dialog" aria-labelledby="invitation-title"></dialog>
+  <script type="module" src="organization-home.mjs?v=1.1"></script>
+</body>
+</html>

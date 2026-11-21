@@ -25,6 +25,8 @@ pub(crate) struct SectionScreen {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PageReading {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<&'static crate::page_templates::PageTemplate>,
     pub revision: String,
     pub text: String,
     pub rendered_html: Option<RenderedMarkdown>,
@@ -32,6 +34,16 @@ pub(crate) struct PageReading {
     pub history_to: Option<String>,
     pub cover: CoverView,
     pub attachments: Vec<PageAttachmentView>,
+    pub related: Vec<RelatedDocument>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelatedDocument {
+    pub title: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_label: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -125,6 +137,8 @@ pub(crate) struct PageEditorForm {
     pub attachment_added: Vec<Uuid>,
     pub attachment_removed: Vec<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_link_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub coedit_retry: Option<CoeditRetry>,
 }
 
@@ -139,6 +153,7 @@ pub(crate) struct PageEditConflict {
 }
 
 pub(crate) struct NameForm {
+    pub template: Option<&'static crate::page_templates::PageTemplate>,
     pub operation_id: Uuid,
     pub title: String,
     pub error: String,
@@ -146,4 +161,14 @@ pub(crate) struct NameForm {
     pub cancel_to: String,
     pub action: String,
     pub retry_to: Option<String>,
+}
+
+pub(crate) fn with_parent(path: &str, parent: Option<Uuid>) -> String {
+    match parent {
+        Some(parent) => {
+            let separator = if path.contains('?') { '&' } else { '?' };
+            format!("{path}{separator}parent={parent}")
+        }
+        None => path.to_owned(),
+    }
 }

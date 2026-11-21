@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Север · Видео TeamStream</title>
+  <link rel="stylesheet" href="workspace.css">
+  <style>
+    .demo-controls { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+    .demo-controls select { width: auto; min-width: 0; }
+    .demo-dock { display: flex; justify-content: center; padding: 10px; }
+    .demo-dock .dock-inner { min-width: 0; }
+    .doc-layout.demo-layout { min-height: 0; height: auto; padding-top: 0; }
+    .demo-layout .article { margin-top: clamp(18px, 4vw, 42px); }
+    .demo-public .demo-layout { grid-template-columns: minmax(0, 1fr); }
+    .demo-media .video-poster { width: 100%; color: var(--ink); padding: 10px; }
+    .demo-media .video-poster:hover .video-icon { background: var(--selected); }
+    .demo-media figcaption { flex-wrap: wrap; align-items: center; gap: 3px 12px; }
+    .demo-media figcaption .bar-actions { flex: 0 1 auto; }
+    .demo-media details { position: relative; }
+    .demo-media summary { cursor: pointer; list-style: none; }
+    .demo-media summary::-webkit-details-marker { display: none; }
+    .demo-media menu { list-style: none; margin: 0; position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 2; padding: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); min-width: max-content; }
+    .demo-media .player { aspect-ratio: 16 / 9; display: grid; grid-template-rows: 1fr auto; background: var(--background); }
+    .player-stage { display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--muted); background: radial-gradient(ellipse, var(--selected), var(--background) 75%); text-align: center; padding: 12px; }
+    .player-controls { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: var(--raised); }
+    .player-controls progress { min-width: 12px; flex: 1; accent-color: var(--accent); }
+    .demo-help { padding: 0 9px 9px; color: var(--muted); font-size: 12px; }
+    .demo-source { box-sizing: border-box; width: 100%; min-height: 140px; }
+    .demo-menu { --command-top: 32px; --command-left: 4px; }
+    .demo-start { position: relative; margin-top: 10px; }
+    .demo-footer { margin-top: 12px; }
+    .demo-dialog { width: min(560px, calc(100% - 24px)); }
+    .demo-dialog textarea { resize: vertical; }
+    .demo-dialog .small { margin-top: 7px; }
+    .demo-dialog .space-dialog-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+    .demo-dialog [role=alert] { color: var(--work); }
+    @media (max-width: 590px) { .demo-layout { grid-template-columns: minmax(0, 1fr); } .demo-layout .sidebar { display: none; } }
+  </style>
+  <script type="module" src="teamstream-preview.mjs"></script>
+</head>
+<body class="workspace-shell">
+  <div class="demo-controls">
+    <label for="perspective">Состояние в макете</label>
+    <select class="field compact" id="perspective">
+      <option value="editor">Редактор</option>
+      <option value="reader">Чтение</option>
+      <option value="public">По публичной ссылке</option>
+      <option value="restricted">TeamStream ограничил доступ</option>
+    </select>
+    <label for="theme">Тема</label>
+    <select class="field compact" id="theme"><option value="dark">Тёмная</option><option value="light">Светлая</option></select>
+  </div>
+  <header class="demo-dock">
+    <div class="dock-inner">
+      <div class="dock-context">
+        <span class="dock-tenant"><span class="brand-mark" aria-hidden="true">✧</span><span class="dock-tenant-name">Север</span></span>
+        <span class="dock-context-divider" id="dock-divider" aria-hidden="true">›</span>
+        <span class="dock-space" id="dock-space"><span class="dock-space-name">Документация команды</span></span>
+      </div>
+    </div>
+  </header>
+  <main class="doc-layout demo-layout" data-context="false" id="workspace">
+    <aside class="sidebar" aria-label="Дерево пространства" id="tree">
+      <div class="space-card"><strong>Документация команды</strong></div>
+      <div class="tree-item"><span>Материалы запуска</span></div>
+      <div class="tree-item" aria-current="page"><span>Запись демо</span></div>
+    </aside>
+    <section class="doc-center">
+      <div class="doc-bar">
+        <div class="breadcrumbs" id="breadcrumbs"><span>Материалы запуска</span><span aria-hidden="true">/</span><strong>Запись демо</strong></div>
+        <span class="tag" id="public-label" hidden>Публичный просмотр</span>
+        <button type="button" class="btn primary" id="share">Поделиться</button>
+      </div>
+      <div class="doc-scroll" id="document">
+        <article class="article">
+          <h1 class="editor-title">Запись демо</h1>
+          <div class="editor-toolbar" id="toolbar" aria-label="Форматирование Markdown">
+            <span class="spacer"></span><button class="btn ghost" id="source" type="button" aria-pressed="false">Исходник</button>
+          </div>
+          <div class="editor-visual article-body" id="body">
+            <p>Запись встречи и демонстрация новых возможностей рабочего пространства.</p>
+            <div class="demo-start" id="insert-area">
+              <button class="btn ghost" id="insert" type="button" aria-controls="commands" aria-expanded="false">Вставить блок <kbd>/</kbd></button>
+              <div class="editor-commands demo-menu" id="commands" hidden><button type="button" id="embed"><strong>Встроить</strong></button></div>
+            </div>
+            <figure class="video-block demo-media" id="media" hidden>
+              <button class="video-poster" id="open-player" type="button"><span class="video-icon" aria-hidden="true">▶</span>Открыть плеер</button>
+              <div class="player" id="player" hidden>
+                <div class="player-stage"><strong id="player-title">Демонстрация плеера</strong></div>
+                <div class="player-controls" id="player-controls">
+                  <button class="btn" id="play" type="button">Воспроизвести</button>
+                  <output id="time" aria-label="Прошедшее время">0:00</output>
+                  <progress id="progress" value="0" max="60" aria-label="Ход воспроизведения"></progress>
+                </div>
+              </div>
+              <figcaption>
+                <strong id="provider">TeamStream</strong>
+                <div class="bar-actions">
+                  <a id="external" target="_blank" rel="noopener noreferrer" href="https://teamstream.mws.ru/">Открыть в TeamStream</a>
+                  <button class="btn ghost" id="hide-player" type="button" hidden>Скрыть</button>
+                  <details id="media-menu">
+                    <summary class="btn ghost" aria-label="Действия с блоком">···</summary>
+                    <menu><li><button class="btn ghost" id="change" type="button">Изменить адрес</button></li><li><button class="btn ghost" id="remove" type="button">Удалить блок</button></li></menu>
+                  </details>
+                </div>
+              </figcaption>
+              <p class="demo-help" id="fallback" hidden></p>
+            </figure>
+          </div>
+          <pre class="editor-source demo-source" id="markdown" hidden></pre>
+          <div class="edit-footer demo-footer" id="footer"><button class="btn ghost" id="undo" type="button" disabled>Отменить правку</button><button class="btn primary" id="save" type="button">Сохранить</button></div>
+          <p class="small muted" id="save-note" hidden>Посетители публичной страницы увидят адрес видео. Доступ к самому видео задаётся в TeamStream.</p>
+          <p class="sr-only" id="status" role="status"></p>
+        </article>
+      </div>
+      <div class="doc-scroll" id="denied" hidden><article class="article"><h1 class="editor-title">Страница недоступна</h1><p class="muted">Публичная ссылка больше не действует.</p></article></div>
+    </section>
+  </main>
+  <dialog id="embed-dialog" class="workspace-dialog demo-dialog" aria-labelledby="dialog-title">
+    <form id="embed-form">
+      <header class="dialog-header"><h2 id="dialog-title">Встроить внешний блок</h2></header>
+      <div class="dialog-body">
+        <label class="dialog-field" for="address">Ссылка или код встраивания</label>
+        <textarea class="field" id="address" rows="4" spellcheck="false" aria-describedby="recognized error" placeholder="https://…"></textarea>
+        <button class="btn ghost" id="example" type="button">Подставить пример</button>
+        <p class="small muted" id="recognized" aria-live="polite"></p>
+        <p class="small" id="error" role="alert" hidden></p>
+      </div>
+      <footer class="space-dialog-footer"><button type="button" class="btn ghost" id="cancel">Отмена</button><button type="submit" class="btn primary" id="apply">Вставить</button></footer>
+    </form>
+  </dialog>
+  <dialog id="share-dialog" class="workspace-dialog demo-dialog" aria-labelledby="share-title">
+    <header class="dialog-header"><h2 id="share-title">Публичная ссылка</h2></header>
+    <div class="dialog-body"><p>Любой, у кого есть ссылка на страницу, увидит адрес видео. Для просмотра без входа установите в TeamStream доступ «Все, у кого есть ссылка».</p></div>
+    <footer class="space-dialog-footer"><button type="button" class="btn ghost" id="close-share">Закрыть</button><button type="button" class="btn primary" id="publish">Создать публичную ссылку</button></footer>
+  </dialog>
+</body>
+</html>

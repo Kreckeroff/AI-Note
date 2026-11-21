@@ -4,12 +4,13 @@ use uuid::Uuid;
 
 use crate::clock::now_ms;
 
-use super::{PageAddress, Store};
+use super::{PageAddress, Store, external_sharing::PUBLIC_LINK_IS_ACTIVE};
 
 #[derive(FromRow)]
 struct PresenceRow {
     published_revision: i64,
     can_edit: bool,
+    public_link_active: bool,
     people: String,
 }
 
@@ -18,6 +19,8 @@ struct PresenceRow {
 pub(crate) struct PresenceView {
     pub(crate) published_revision: String,
     pub(crate) can_edit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) public_link_active: Option<bool>,
     pub(crate) people: serde_json::Value,
 }
 
@@ -40,9 +43,10 @@ impl Store {
             .map(|entry| entry.digest.to_vec())
             .collect();
         let editors: Vec<_> = candidates.iter().map(|entry| entry.edit).collect();
-        let row = sqlx::query_as::<_, PresenceRow>(
+        let query = format!(
             "WITH caller AS MATERIALIZED (
-                 SELECT p.content_revision AS published_revision, access.can_edit
+                 SELECT p.content_revision AS published_revision, access.can_edit,
+                        access.can_edit AND {PUBLIC_LINK_IS_ACTIVE} AS public_link_active
                  FROM page_permissions($1,$2,$3,$4) access
                  JOIN pages p ON (p.tenant_id,p.space_id,p.id)=($1,$2,$4)
                  JOIN sessions s ON s.account_id = $3 AND s.token_digest = $9 AND s.expires_at > $8
@@ -58,25 +62,27 @@ impl Store {
                  WHERE access.can_read AND c.account_id <> $3
                  GROUP BY c.account_id,a.name
              )
-             SELECT published_revision,can_edit,
+             SELECT published_revision,can_edit,public_link_active,
                     COALESCE((SELECT jsonb_agg(to_jsonb(people) ORDER BY name,id) FROM people),'[]'::jsonb)::text AS people
              FROM caller",
-        )
-        .bind(address.tenant)
-        .bind(address.space)
-        .bind(address.account)
-        .bind(address.page)
-        .bind(accounts)
-        .bind(digests)
-        .bind(editors)
-        .bind(now_ms())
-        .bind(&session[..])
-        .fetch_optional(&self.0)
-        .await?;
+        );
+        let row = sqlx::query_as::<_, PresenceRow>(&query)
+            .bind(address.tenant)
+            .bind(address.space)
+            .bind(address.account)
+            .bind(address.page)
+            .bind(accounts)
+            .bind(digests)
+            .bind(editors)
+            .bind(now_ms())
+            .bind(&session[..])
+            .fetch_optional(&self.0)
+            .await?;
         row.map(|row| {
             Ok(PresenceView {
                 published_revision: row.published_revision.to_string(),
                 can_edit: row.can_edit,
+                public_link_active: row.can_edit.then_some(row.public_link_active),
                 people: serde_json::from_str(&row.people).map_err(|error| {
                     sqlx::Error::ColumnDecode {
                         index: "people".to_owned(),

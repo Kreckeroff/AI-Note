@@ -63,7 +63,7 @@ pub(crate) async fn handle(
     request: Request,
 ) -> Result<Response, sqlx::Error> {
     match *request.method() {
-        Method::GET | Method::HEAD => read(store, address, request).await,
+        Method::GET | Method::HEAD => read(store, address, origin, request).await,
         Method::POST => write(store, address, origin, request).await,
         _ => Ok(http::method_not_allowed("GET, HEAD, POST")),
     }
@@ -124,6 +124,7 @@ fn parse_query(form: &Form) -> Result<DiscussionQuery<'_>, ()> {
 async fn read(
     store: &Store,
     address: &PageAddress,
+    origin: &str,
     request: Request,
 ) -> Result<Response, sqlx::Error> {
     let form = Form::from_query(request.uri().query().unwrap_or_default());
@@ -139,7 +140,7 @@ async fn read(
             })
         }
         DiscussionQuery::Threads(query) => {
-            let Some(mut result) = store.discussion_threads(address, query).await? else {
+            let Some(mut result) = store.discussion_threads(address, origin, query).await? else {
                 return Ok(error(StatusCode::NOT_FOUND));
             };
             let history_path = page_history_path(address.tenant, address.space, address.page);
@@ -207,7 +208,7 @@ async fn write(
     };
     let action = command.action();
     let request_id = Uuid::new_v4();
-    let result = store.write_comment(address, command).await;
+    let result = store.write_comment(address, origin, command).await;
     let outcome = result
         .as_ref()
         .map_or("unavailable", DiscussionOutcome::outcome);

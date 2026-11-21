@@ -22,6 +22,7 @@ use crate::text::escape_html as html;
 use client::ClientPage;
 
 const NORTH_ICON: &str = r#"<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.8 7.2L22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8L12 2z M12 9v6m-3-3h6"/></svg>"#;
+pub(crate) const PAGE_EMBED_SCRIPT: &str = r#"<script src="/page-embed.js" defer></script>"#;
 
 fn icon(name: &str) -> String {
     let path = match name {
@@ -46,6 +47,7 @@ fn icon(name: &str) -> String {
 enum PageAssets {
     Account { sign_in: bool },
     Workspace { menu: bool, form: bool },
+    History { embeds: bool },
 }
 
 fn page<'a>(
@@ -55,12 +57,23 @@ fn page<'a>(
     model: impl Into<Option<ClientPage<'a>>>,
 ) -> String {
     let title = html(title);
-    let stylesheet = if matches!(assets, PageAssets::Workspace { .. }) {
+    let stylesheet = if matches!(
+        assets,
+        PageAssets::Workspace { .. } | PageAssets::History { .. }
+    ) {
         r#"<link rel="stylesheet" href="/spaces.css">"#
     } else {
         ""
     };
     let model = model.into();
+    let embeds = match &model {
+        Some(ClientPage::ClosedSpace { tree, .. }) => {
+            tree.reading.is_some() || tree.editor.is_some()
+        }
+        Some(ClientPage::PageEditRetry { .. }) => true,
+        _ => matches!(assets, PageAssets::History { embeds: true }),
+    };
+    let embed_script = if embeds { PAGE_EMBED_SCRIPT } else { "" };
     let can_save = match &model {
         Some(ClientPage::ClosedSpace { tree, .. }) => {
             tree.editor.as_ref().is_some_and(|form| form.can_save)
@@ -98,6 +111,7 @@ fn page<'a>(
                 menu.then_some("/workspace-menu.mjs"),
                 form.then_some("/space-form.mjs"),
             ],
+            PageAssets::History { .. } => [None, None],
         };
         let scripts = sources
             .into_iter()
@@ -105,6 +119,11 @@ fn page<'a>(
             .map(|source| format!(r#"<script type="module" src="{source}"></script>"#))
             .collect::<String>();
         (scripts, Cow::Borrowed(body))
+    };
+    let workspace_body = if stylesheet.is_empty() {
+        ""
+    } else {
+        r#" class="parity-workspace""#
     };
     format!(
         r#"<!doctype html>
@@ -115,10 +134,13 @@ fn page<'a>(
     <title>{title} · Север</title>
     <link rel="stylesheet" href="/auth.css">
     {stylesheet}
+    <link rel="stylesheet" href="/parity.css">
+    <script src="/workspace-chrome.js" defer></script>
     {editor_script}
+    {embed_script}
     {scripts}
   </head>
-  <body>{body}</body>
+  <body{workspace_body}>{body}</body>
 </html>"#
     )
 }

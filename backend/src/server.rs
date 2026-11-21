@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::{
-    Router,
+    Extension, Router,
     extract::{Request, State},
     http::{HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
@@ -13,19 +13,121 @@ use axum::{
 use tokio::net::TcpListener;
 
 use crate::{
+    approach_http, collections_http,
     coedit_presence::PresenceTracker,
     db::Store,
+    document_finding,
     external_sharing::{SharingDelivery, private_address, sharing_error},
     http::{self, Form, FormError, html, plain, redirect},
     identity::{self, Identity, LoginOutcome},
+    knowledge_graph, organization_http,
     page_social_route::{self, SocialRoute},
     registration::Registration,
-    sections_http, views,
+    sections_http, tasks_http,
+    teamstream::IsolatedOrigin,
+    views,
     workspace::{
         DocumentsRoute, DocumentsTarget, HistoryTarget, Route, WORKSPACE_PATH, local_target,
     },
-    workspace_http,
+    workspace_chrome, workspace_http,
 };
+
+enum WorkspaceSurface {
+    Organization(organization_http::OrganizationRoute),
+    Finding(document_finding::FindingRoute),
+    Collections(collections_http::Route),
+    Tasks(tasks_http::TasksRoute),
+    Graph(knowledge_graph::GraphRoute),
+    Approach(approach_http::ApproachRoute),
+    Chrome(workspace_chrome::ChromeRoute),
+}
+
+impl WorkspaceSurface {
+    fn parse(path: &str) -> Option<Self> {
+        organization_http::OrganizationRoute::parse(path)
+            .map(Self::Organization)
+            .or_else(|| document_finding::FindingRoute::parse(path).map(Self::Finding))
+            .or_else(|| tasks_http::TasksRoute::parse(path).map(Self::Tasks))
+            .or_else(|| collections_http::Route::parse(path).map(Self::Collections))
+            .or_else(|| knowledge_graph::GraphRoute::parse(path).map(Self::Graph))
+            .or_else(|| approach_http::ApproachRoute::parse(path).map(Self::Approach))
+            .or_else(|| workspace_chrome::ChromeRoute::parse(path).map(Self::Chrome))
+    }
+
+    fn allows_anonymous(&self) -> bool {
+        matches!(self, Self::Organization(route) if route.allows_anonymous())
+    }
+
+    fn allows_read(&self) -> bool {
+        match self {
+            Self::Organization(route) => route.allows_read(),
+            _ => true,
+        }
+    }
+
+    fn allows_post(&self) -> bool {
+        match self {
+            Self::Organization(route) => route.allows_post(),
+            Self::Tasks(_) | Self::Approach(_) | Self::Collections(_) => true,
+            Self::Finding(_) | Self::Graph(_) | Self::Chrome(_) => false,
+        }
+    }
+
+    async fn handle(
+        self,
+        store: &Store,
+        principal: Option<&crate::db::Principal>,
+        origin: &str,
+        request: Request,
+    ) -> Result<Response, sqlx::Error> {
+        if let Self::Organization(route) = self {
+            return organization_http::handle(store, principal, route, origin, request).await;
+        }
+        let Some(principal) = principal else {
+            return Ok(redirect("/"));
+        };
+        match self {
+            Self::Finding(route) => {
+                document_finding::handle(store, principal, route, origin, request).await
+            }
+            Self::Collections(route) => collections_http::handle(store, principal, route, origin, request).await,
+            Self::Tasks(route) => {
+                tasks_http::handle(store, principal, route, origin, request).await
+            }
+            Self::Graph(route) => knowledge_graph::handle(store, principal, route, request).await,
+            Self::Approach(route) => {
+                approach_http::handle(store, principal, route, origin, request).await
+            }
+            Self::Chrome(route) => route.handle(store, principal, request.uri()).await,
+            Self::Organization(_) => unreachable!(),
+        }
+    }
+}
+
+fn login_target(target: &str) -> String {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if target.len() <= 1400
+        && !target
+            .chars()
+            .any(|character| character.is_ascii_control() || character == '\\')
+        && WorkspaceSurface::parse(path)
+            .is_some_and(|route| !matches!(route, WorkspaceSurface::Chrome(_)) && route.allows_read())
+    {
+        let encoded = url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect::<Vec<_>>();
+        let clean = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(encoded)
+            .finish();
+        if clean.is_empty() {
+            path.to_owned()
+        } else {
+            format!("{path}?{clean}")
+        }
+    } else {
+        local_target(target)
+    }
+}
 
 struct Server {
     store: Store,
@@ -49,6 +151,7 @@ pub(crate) async fn run(
     let listener = TcpListener::bind(SocketAddrV4::new(bind_addr, port)).await?;
     let host = format!("{public_host}:{}", listener.local_addr()?.port());
     let origin = format!("http://{host}");
+    let teamstream = IsolatedOrigin::from_env(&origin)?;
     println!("Север · {origin}/");
     let cleanup_store = store.clone();
     let (stop_cleanup, cleanup_stopped) = tokio::sync::oneshot::channel();
@@ -61,11 +164,14 @@ pub(crate) async fn run(
         host,
         origin,
     });
-    let app = axum::serve(listener, Router::new().fallback(dispatch).with_state(state))
-        .with_graceful_shutdown(async move {
-            shutdown().await;
-            let _ = stop_cleanup.send(());
-        });
+    let mut routes = Router::new().fallback(dispatch).with_state(state);
+    if let Some(teamstream) = teamstream {
+        routes = routes.layer(Extension(teamstream));
+    }
+    let app = axum::serve(listener, routes).with_graceful_shutdown(async move {
+        shutdown().await;
+        let _ = stop_cleanup.send(());
+    });
     let cleanup = async move {
         tokio::select! {
             biased;
@@ -104,7 +210,7 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                 "Откройте «Север» по локальному адресу.",
             )
         } else {
-            let target = local_target(
+            let target = login_target(
                 request
                     .uri()
                     .path_and_query()
@@ -118,6 +224,9 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
             let history_json = history_target == Some(HistoryTarget::List)
                 && sections_http::history_wants_json(request.headers());
             let catalog = route.is_some_and(Route::is_catalog);
+            let page_link_search = is_read
+                && document_finding::is_page_link_request(request.uri().query())
+                && document_finding::FindingRoute::parse(request.uri().path()).is_some();
             let documents_read =
                 matches!(route, Some(Route::Documents(_))) && is_read && !target.is_empty();
             match tokio::time::timeout(Duration::from_secs(15), state.handle(request)).await {
@@ -146,6 +255,11 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
                         sections_http::attachment_unavailable(is_read)
                     } else if history_json {
                         sections_http::history_api_error(StatusCode::SERVICE_UNAVAILABLE)
+                    } else if page_link_search {
+                        document_finding::page_link_search_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Не удалось загрузить страницы. Попробуйте снова.",
+                        )
                     } else if catalog {
                         html(
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -181,6 +295,22 @@ async fn dispatch(State(state): State<Arc<Server>>, request: Request) -> Respons
         };
     http::finish(&mut response, head);
     response
+}
+
+fn sign_in_redirect(request: &Request, is_read: bool) -> Response {
+    let target = login_target(
+        request
+            .uri()
+            .path_and_query()
+            .map_or("", |part| part.as_str()),
+    );
+    if !is_read || target.is_empty() {
+        return redirect("/");
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("returnTo", &target)
+        .finish();
+    redirect(&format!("/?{query}"))
 }
 
 fn database_error_kind(error: &sqlx::Error) -> &'static str {
@@ -223,13 +353,20 @@ impl Server {
             };
         }
         let route = Route::parse(path);
+        let surface = WorkspaceSurface::parse(path);
         let asset = asset(path);
-        if path != "/" && route.is_none() && asset.is_none() {
+        if path != "/" && route.is_none() && surface.is_none() && asset.is_none() {
             return Ok(plain(StatusCode::NOT_FOUND, "Страница не найдена."));
         }
         let is_read = matches!(*request.method(), Method::GET | Method::HEAD);
-        let accepts_read = route.is_none_or(Route::allows_read);
-        let accepts_post = route.is_some_and(Route::allows_post);
+        let accepts_read = surface.as_ref().map_or_else(
+            || route.is_none_or(Route::allows_read),
+            WorkspaceSurface::allows_read,
+        );
+        let accepts_post = surface.as_ref().map_or_else(
+            || route.is_some_and(Route::allows_post),
+            WorkspaceSurface::allows_post,
+        );
         if !(is_read && accepts_read || accepts_post && request.method() == Method::POST) {
             let methods = match (accepts_read, accepts_post) {
                 (true, true) => "GET, HEAD, POST",
@@ -250,14 +387,13 @@ impl Server {
                     "",
                     "",
                     self.registration.is_some(),
-                    &local_target(query.get("returnTo")),
+                    &login_target(query.get("returnTo")),
                 ),
             ));
         }
-        let route = route.expect("workspace route checked");
         let identify = identity::identify(&self.store, request.headers());
         let preserve_submission = match route {
-            Route::Documents(
+            Some(Route::Documents(
                 documents @ DocumentsRoute {
                     target:
                         DocumentsTarget::Pages(_)
@@ -268,7 +404,7 @@ impl Server {
                         },
                     ..
                 },
-            ) if request.method() == Method::POST => Some(documents),
+            )) if request.method() == Method::POST => Some(documents),
             _ => None,
         };
         let principal = if let Some(documents) = preserve_submission {
@@ -322,8 +458,34 @@ impl Server {
         } else {
             identify.await?
         };
+        if let Some(surface) = surface {
+            if principal.is_some() || surface.allows_anonymous() {
+                return surface
+                    .handle(&self.store, principal.as_ref(), &self.origin, request)
+                    .await;
+            }
+            if matches!(surface, WorkspaceSurface::Chrome(_)) {
+                return Ok(sharing_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Войдите в приложение.",
+                ));
+            }
+            if matches!(surface, WorkspaceSurface::Finding(_))
+                && document_finding::is_page_link_request(request.uri().query())
+            {
+                return Ok(document_finding::page_link_search_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Войдите в приложение.",
+                ));
+            }
+            return Ok(sign_in_redirect(&request, is_read));
+        }
+        let route = route.expect("workspace route checked");
         let Some(principal) = principal else {
             let history_target = route.history_target();
+            if matches!(route, Route::Documents(DocumentsRoute { target: DocumentsTarget::RenamePage(_), .. })) {
+                return Ok(plain(StatusCode::UNAUTHORIZED, "Войдите в приложение."));
+            }
             if route.is_cover() {
                 return Ok(sections_http::cover_unauthenticated(is_read));
             }
@@ -335,7 +497,7 @@ impl Server {
             {
                 return Ok(sections_http::history_api_error(StatusCode::UNAUTHORIZED));
             }
-            let target = local_target(
+            let target = login_target(
                 request
                     .uri()
                     .path_and_query()
@@ -352,6 +514,15 @@ impl Server {
                 },
             );
         };
+        if matches!(route, Route::Current)
+            && is_read
+            && request.uri().query().is_none()
+            && let (Some(data), _) = self.store.workspace(principal.id, None).await?
+        {
+            return Ok(redirect(&organization_http::organization_path(
+                data.tenant.id,
+            )));
+        }
         workspace_http::handle(&self.store, route, &principal, &self.origin, request).await
     }
 
@@ -382,7 +553,7 @@ impl Server {
                 ));
             }
         };
-        let return_to = local_target(form.get("returnTo"));
+        let return_to = login_target(form.get("returnTo"));
         let email = form.get("email");
         let value: String = email.chars().take(identity::EMAIL_MAX_LENGTH).collect();
         match self
@@ -442,12 +613,19 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
     Some(match path {
         "/auth.css" => (CSS, include_str!("../../app/auth.css")),
         "/spaces.css" => (CSS, include_str!("../../app/spaces.css")),
+        "/parity.css" => (CSS, include_str!("../../app/parity.css")),
+        "/workspace-chrome.js" => (JS, include_str!("../../app/workspace-chrome.js")),
+        "/workspace-graph.js" => (JS, include_str!("../../app/workspace-graph.js")),
+        "/collections.css" => (CSS, collections_http::STYLES),
+        "/tasks.css" => (CSS, tasks_http::STYLES),
+        "/tasks.js" => (JS, tasks_http::SCRIPT),
         "/sign-in.mjs" => (JS, include_str!("../../app/sign-in.mjs")),
         "/space-form.mjs" => (JS, include_str!("../../app/space-form.mjs")),
         "/page-editor.js" => (JS, include_str!("../../app/page-editor.js")),
+        "/page-embed.js" => (JS, include_str!("../../app/page-embed.js")),
         "/workspace-menu.mjs" => (JS, include_str!("../../app/workspace-menu.mjs")),
         views::UI_BUNDLE_PATH if !views::UI_BUNDLE.is_empty() => (JS, views::UI_BUNDLE),
-        _ => return None,
+        _ => return organization_http::asset(path),
     })
 }
 
@@ -531,6 +709,33 @@ mod tests {
             };
             sections.push(section);
         }
+        let post = |uri: String, form: String| {
+            dispatch(
+                State(server.clone()),
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header(header::HOST, &server.host)
+                    .header(header::ORIGIN, &server.origin)
+                    .header(header::COOKIE, format!("sever_session={token}"))
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form))
+                    .unwrap(),
+            )
+        };
+        for fields in [
+            "name=Example&template=meeting-v1&template=decision-v1",
+            "name=Example&template=&template=",
+            "name=One%E2%80%A8Two",
+            "name=One%E2%80%A9Two",
+        ] {
+            let response = post(
+                format!("{path}/sections/{}/pages", sections[0]),
+                format!("operation_id={}&{fields}", Uuid::new_v4()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
         let without_pages = request(Method::GET, space_url.clone()).await;
         assert_eq!(without_pages.status(), StatusCode::OK);
         let body = to_bytes(without_pages.into_body(), 64 * 1024).await?;
@@ -556,6 +761,15 @@ mod tests {
                 panic!("fixture page must be created");
             };
             pages.push(page);
+        }
+
+        for title in ["One%E2%80%A8Two", "One%E2%80%A9Two"] {
+            let response = post(
+                format!("{path}/pages/{}/rename", pages[0]),
+                format!("base_revision=1&title={title}"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         }
 
         let first = format!("{path}/pages/{}{query}", pages[1]);
@@ -754,6 +968,22 @@ mod tests {
         assert!(!body.contains("id=\"edit-page\""));
 
         let draft = "Мой <черновик>";
+        let export_to = format!("{path}?download=markdown");
+        let export = send(editor_token, &export_to, None).await;
+        assert_eq!(export.status(), StatusCode::OK);
+        assert_eq!(
+            export.headers()[header::CONTENT_TYPE],
+            "text/markdown; charset=utf-8"
+        );
+        assert!(
+            export.headers()[header::CONTENT_DISPOSITION]
+                .to_str()?
+                .ends_with(".md")
+        );
+        assert_eq!(
+            response_text(export).await?,
+            crate::text::text_to_markdown(&value.replace("\r\n", "\n"))
+        );
         let conflict = send(owner_token, &edit_to, Some((draft, "1", None))).await;
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
         let body = response_text(conflict).await?;
@@ -803,6 +1033,13 @@ mod tests {
         sqlx::query("UPDATE tenant_memberships SET status = 'inactive', is_current = false WHERE tenant_id = $1 AND account_id = $2")
             .bind(tenant).bind(editor).execute(&pool).await?;
         let denied = send(editor_token, &edit_to, Some((draft, "4", None))).await;
+        let denied_export = send(editor_token, &export_to, None).await;
+        assert!(
+            !denied_export
+                .headers()
+                .contains_key(header::CONTENT_DISPOSITION)
+        );
+        assert!(!response_text(denied_export).await?.contains(&limit));
         let missing_to = format!(
             "/workspace/{tenant}/spaces/{space}/pages/{}/edit",
             Uuid::new_v4()
@@ -841,6 +1078,13 @@ mod tests {
         assert_eq!(stored().await?, (9, expected_source.clone(), true));
 
         let other_read = format!("/workspace/{tenant}/spaces/{space}/pages/{}", pages[1]);
+        let exported = send(
+            owner_token,
+            &format!("{other_read}?download=markdown"),
+            None,
+        )
+        .await;
+        assert_eq!(response_text(exported).await?, expected_source);
         let body = response_text(send(owner_token, &other_read, None).await).await?;
         assert!(body.contains(r#"class="document-text document-markdown"><h3>Заголовок</h3>"#));
         assert!(body.contains("<strong>слово</strong> и <em>термин</em>"));
@@ -950,12 +1194,24 @@ mod tests {
             .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
             .body(Body::empty())
             .unwrap();
-        let response = dispatch(State(server), request).await;
+        let response = dispatch(State(server.clone()), request).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains("Не удалось открыть документы"));
         assert!(body.contains(&format!(r#"href="{PATH}?scope=mine&amp;page=3""#)));
+
+        let picker = Request::builder()
+            .uri(format!("{}/search?kind=page-links", PATH.split("/pages/").next().unwrap()))
+            .header(header::HOST, &server.host)
+            .header(header::COOKIE, format!("sever_session={}", "A".repeat(43)))
+            .body(Body::empty())
+            .unwrap();
+        let response = dispatch(State(server), picker).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"].is_string());
     }
 
     #[tokio::test]

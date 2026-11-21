@@ -10,6 +10,8 @@ axum = "0.8"
 base64 = "0.22"
 hmac = "0.12"
 http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 icu_collator = "2.2"
 icu_locale_core = "2.2"

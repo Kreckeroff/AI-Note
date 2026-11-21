@@ -20,6 +20,7 @@ export function WorkspacePicker({workspace, current}: {workspace: WorkspaceModel
   const tenantMenu = useRef<HTMLDetailsElement>(null);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const label = current?.name ?? 'Выбрать пространство';
+  const logo = <span className="parity-brand"><img src={`/workspace/${tenant.id}/organization/logo`} alt="" /></span>;
   const filter = fold(query.trim());
   const visibleGroups = groups.map(({title, owned}) => ({
     title,
@@ -64,12 +65,12 @@ export function WorkspacePicker({workspace, current}: {workspace: WorkspaceModel
   return (
     <div className="dock-identity">
       {tenants.length < 2 ? (
-        <span className="dock-tenant"><Icon /><span>{tenant.name}</span></span>
+        <a className="dock-tenant" href={`/workspace/${tenant.id}/organization`}>{logo}<span>{tenant.name}</span></a>
       ) : (
         <details ref={tenantMenu} className="dock-choice" data-workspace-choice
           onToggle={handleToggle} onKeyDown={closeOnEscape}>
           <summary className="dock-tenant" aria-label={`Сменить среду. Текущая: ${tenant.name}`}>
-            <Icon /><span>{tenant.name}</span><Icon name="down" />
+            {logo}<span>{tenant.name}</span><Icon name="down" />
           </summary>
           <div className="dock-panel">
             <strong>Выбрать среду</strong>
@@ -77,9 +78,9 @@ export function WorkspacePicker({workspace, current}: {workspace: WorkspaceModel
               {tenants.map(item => (
                 <li key={item.id}>
                   {item.id === tenant.id ? (
-                    <span className="choice-current" aria-current="true">{item.name} <small>Текущая среда</small></span>
+                    <a className="choice-current" aria-current="true" href={`/workspace/${item.id}/organization`}>{item.name} <small>Главная организации</small></a>
                   ) : (
-                    <a href={spacesPath(item.id)}>{item.name}<Icon name="next" /></a>
+                    <form className="parity-switch" method="post" action={`/workspace/${item.id}/organization/switch`}><button type="submit">{item.name}<Icon name="next" /></button></form>
                   )}
                 </li>
               ))}

@@ -1,9 +1,16 @@
+import {catalogFixtures, catalogOwners} from './catalog-fixtures.mjs';
+
 export const roles = {read:'Читатель', comment:'Комментатор', edit:'Редактор', none:'Нет доступа'};
 export const markdownLimit = 30000;
 export const taskStatuses = {open:'Запланировано', work:'В работе', review:'На согласовании', done:'Готово'};
+export const demoOrganizationId = 'sever-org';
+export const demoOrganizationName = 'Север';
+export const personalTenantName = 'Моя среда';
+export const demoPersonalSpace = {id:'demo-personal',name:'Личные заметки',documentId:'demo-personal-notes'};
+export const tenantDemoScope = '.tenant-demo';
 export const workspaceNames = {
-  north: {name:'Север', description:'Рабочее пространство', glyph:'north', owner:'anna'},
-  lab: {name:'Лаборатория', description:'Личное пространство', glyph:'spark', owner:'anna'},
+  north: {name:'Документация команды', description:'Рабочее пространство', glyph:'folder', owner:'anna'},
+  lab: {name:'Лаборатория', description:'Исследования и черновики', glyph:'spark', owner:'anna'},
 };
 export const people = {
   anna: {name:'Анна Миронова', initials:'АМ', email:'anna@sever.example', tone:'agent'},
@@ -49,7 +56,7 @@ const seed = {
     ].join('\n\n'),2),graph:'scope'},
     {...page('template','permissions','Шаблон приглашения','Что указать в приглашении участнику.',[
       '## Перед отправкой','- Укажи получателя приглашения.\n- Выбери раздел и уровень доступа.\n- Добавь ссылку на первый документ.',
-      '## Сообщение участнику','Добро пожаловать в рабочее пространство «Север». Открой материалы раздела «Онбординг».',
+      '## Сообщение участнику',`Добро пожаловать в пространство «${workspaceNames.north.name}». Открой материалы раздела «Онбординг».`,
     ].join('\n\n')),graph:'template'},
     page('people','onboarding','Команда и роли','Участники команды и зоны ответственности.',
       '## Участники\n\nАнна согласует доступ. Ирина проверяет страницу с позиции приглашённого участника. Аналитик A-02 готовит предложение.'),
@@ -90,26 +97,73 @@ const seed = {
 
 export const workspaceStorageKey = 'sever.workspace.prototype.v1';
 const sessionKey = 'sever.workspace.session.v1';
-export function loadWorkspace() {
-  let data = structuredClone(seed);
+const legacyCatalogKey = 'sever.space-catalog' + tenantDemoScope;
+const catalogOwnerId = index => index === 0 ? 'anna' : `catalog-owner-${index}`;
+
+function seedTenantDemo(data) {
+  // North keeps its editor ID; the remaining catalogue rows retain their original IDs.
+  for (const {id,name,owner} of catalogFixtures(workspaceNames.north.name).slice(1)) {
+    data.spaceDetails[id] = {name, glyph:'folder', owner:catalogOwnerId(owner), tenantId:demoOrganizationId};
+  }
+  for (const [index,[name]] of catalogOwners.entries()) {
+    if (index > 0) data.profiles[catalogOwnerId(index)] = {name};
+  }
+  data.memberships['space-2'] = {anna:'read'};
+  data.memberships['space-7'] = {anna:'edit'};
+  data.spaceDetails[demoPersonalSpace.id] = {name:demoPersonalSpace.name,description:'Личные документы и черновики',glyph:'folder',owner:'anna',tenantId:'anna'};
+  data.documents.push(page(demoPersonalSpace.documentId,'','Мои заметки','Личные записи Анны Мироновой.',
+    '## Черновики\n\nЗдесь можно хранить планы и заметки для себя.',1,demoPersonalSpace.id));
+}
+
+export function migrateLegacyDemoCatalogue() {
   try {
-    const saved = JSON.parse(localStorage.getItem(workspaceStorageKey) || 'null');
-    if (saved && Array.isArray(saved.documents) && Array.isArray(saved.tasks)) data = {...data,...saved};
+    const previous = sessionStorage.getItem(legacyCatalogKey);
+    if (previous === null) return;
+    const records = JSON.parse(previous);
+    if (!Array.isArray(records)) return;
+    const data = loadWorkspace(tenantDemoScope);
+    let changed = false;
+    for (const record of records) {
+      const {id,name,environment} = record ?? {};
+      if (typeof id !== 'string' || !/^created-[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/.test(id)) continue;
+      if (typeof name !== 'string' || !name.trim() || [...name].length > 100 || Object.hasOwn(data.spaceDetails,id)) continue;
+      if (environment !== demoOrganizationName && environment !== personalTenantName) continue;
+      data.spaceDetails[id] = {name,glyph:'folder',owner:'anna',tenantId:environment === personalTenantName ? 'anna' : demoOrganizationId};
+      changed = true;
+    }
+    if (!changed || persistWorkspace(data,tenantDemoScope)) sessionStorage.removeItem(legacyCatalogKey);
+  } catch { /* A restricted storage provider must not prevent the demo from opening. */ }
+}
+
+export function loadWorkspace(scope = '') {
+  let data = structuredClone(seed);
+  const demo = scope === tenantDemoScope;
+  if (demo) seedTenantDemo(data);
+  try {
+    const saved = JSON.parse(localStorage.getItem(workspaceStorageKey + scope) || 'null');
+    if (saved && Array.isArray(saved.documents) && Array.isArray(saved.tasks)) {
+      if (demo) for (const key of ['spaceDetails','profiles','memberships']) saved[key] = {...data[key],...saved[key]};
+      data = {...data,...saved};
+    }
   } catch { /* Preview still works when local storage is restricted. */ }
   try {
-    const session = JSON.parse(sessionStorage.getItem(sessionKey) || 'null');
+    const session = JSON.parse(sessionStorage.getItem(sessionKey + scope) || 'null');
     if (session) data = {...data,...session};
   } catch { /* Keep the demo defaults when tab storage is unavailable. */ }
+  if (demo) {
+    data.account = 'anna';
+    data.tenantDemo = true;
+  }
   return data;
 }
-export function persistWorkspace(data) {
-  const {account,space,theme,...workspace} = data;
-  try { localStorage.setItem(workspaceStorageKey, JSON.stringify(workspace)); return true; }
+export function persistWorkspace(data,scope = '') {
+  const {account,space,theme,tenantDemo,...workspace} = data;
+  try { localStorage.setItem(workspaceStorageKey + scope, JSON.stringify(workspace)); return true; }
   catch { return false; }
 }
-export function persistSession(data) {
+export function persistSession(data,scope = '') {
   const {account,space,theme} = data;
-  try { sessionStorage.setItem(sessionKey,JSON.stringify({account,space,theme})); }
+  try { sessionStorage.setItem(sessionKey + scope,JSON.stringify({account,space,theme})); }
   catch { /* Keep the current tab's identity in memory. */ }
 }
 
@@ -139,17 +193,45 @@ export function taskAssignees(data,task) {
 export function spaceInfo(data,id = data.space) {
   return {...workspaceNames[id],...data.spaceDetails[id]};
 }
+export function tenantIdForSpace(data,id = data.space) {
+  const {tenantId,owner} = spaceInfo(data,id);
+  if (tenantId) return tenantId;
+  // Spaces from older previews have no tenant ID. Demo profiles share the organization.
+  return owner && !Object.hasOwn(people,owner) ? owner : demoOrganizationId;
+}
 export function ownsSpace(data,id = data.space) {
   return Boolean(data.account) && spaceInfo(data,id).owner === data.account;
 }
 export function memberRole(data,id,account = data.account) {
   return data.memberships[id]?.[account];
 }
+export function spaceAccess(data,id) {
+  if (!data.account || !spaceInfo(data,id).name) return null;
+  if (ownsSpace(data,id)) return {role:'edit',source:'owner'};
+  const assigned = memberRole(data,id);
+  if (assigned && assigned !== 'none') return {role:assigned,source:'membership'};
+  if (data.tenantDemo && data.account === 'anna' && tenantIdForSpace(data,id) === demoOrganizationId) {
+    return {role:'read',source:'administrator'};
+  }
+  return null;
+}
 export function availableSpaces(data) {
   if (!data.account) return [];
   return [...new Set([...Object.keys(workspaceNames),...Object.keys(data.spaceDetails)])]
-    .filter(id => ownsSpace(data,id) || memberRole(data,id) ||
+    .filter(id => spaceAccess(data,id) ||
       data.documents.some(doc => doc.space === id && accessFor(data,doc) !== 'none'));
+}
+export function availableTenantSpaces(data,tenantId = tenantIdForSpace(data)) {
+  return availableSpaces(data).filter(id => tenantIdForSpace(data,id) === tenantId);
+}
+export function availableTenants(data) {
+  return [...new Set(availableSpaces(data).map(id => tenantIdForSpace(data,id)))];
+}
+export function tenantNameFor(data,tenantId = tenantIdForSpace(data)) {
+  if (tenantId === demoOrganizationId) return demoOrganizationName;
+  if (tenantId === data.account) return personalTenantName;
+  const owner = profileFor(data,tenantId)?.name;
+  return owner ? `Личная среда · ${owner}` : 'Личная среда';
 }
 export function invitesEnabled(data,id = data.space) {
   return data.spaceDetails[id]?.invites ?? data.settings.invites;
@@ -168,9 +250,19 @@ export function accountIds(data) {
 export function accountForEmail(data,email) {
   return accountIds(data).find(id => profileFor(data,id).email?.toLowerCase() === email.toLowerCase());
 }
-export function createSpace(data,name,description = '') {
+export function demoSpaceNameError(data,name,tenantId) {
+  if (!name) return 'Введите название пространства.';
+  if ([...name].length > 100) return 'Введите не больше 100 символов.';
+  const normalized = value => value.normalize('NFC').toLocaleLowerCase('ru');
+  if (availableTenantSpaces(data,tenantId).some(id => ownsSpace(data,id) && normalized(spaceInfo(data,id).name) === normalized(name))) {
+    return 'У вас уже есть пространство с таким названием.';
+  }
+  return '';
+}
+export function createSpace(data,name,description = '',tenantId = tenantIdForSpace(data),{starterPage = true} = {}) {
   const id = crypto.randomUUID();
-  data.spaceDetails[id] = {name,description,glyph:'north',owner:data.account};
+  data.spaceDetails[id] = {name,description,glyph:'folder',owner:data.account,tenantId};
+  if (!starterPage) return {id};
   const home = {...page(crypto.randomUUID(),'','Добро пожаловать','', '## Начните со страницы\n\nДобавьте документ или пригласите участника через настройки пространства.',1,id),author:data.account};
   data.documents.push(home);
   return {id,home};
@@ -180,7 +272,7 @@ export function signUp(data,name,email,provider = 'local') {
   const account = crypto.randomUUID();
   data.profiles[account] = {name,email,providers:provider === 'sso' ? {sso:true} : {}};
   data.account = account;
-  return createSpace(data,name,'Личное пространство');
+  return createSpace(data,name,'Личное пространство',account);
 }
 export function isCoverImage(cover) {
   return /^image:[\w-]{1,64}$/.test(cover || '');
@@ -202,7 +294,7 @@ export function accessFor(data, doc) {
     const permission = data.permissions[current.id];
     if (permission?.members[data.account]) return permission.members[data.account];
   }
-  return memberRole(data,doc.space) || 'none';
+  return spaceAccess(data,doc.space)?.role || 'none';
 }
 export function canWrite(data, doc) {
   return accessFor(data, doc) === 'edit';

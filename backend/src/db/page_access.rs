@@ -55,11 +55,11 @@ impl Store {
         address: &PageAddress,
     ) -> Result<Option<Page>, sqlx::Error> {
         let query = format!(
-            "SELECT p.title FROM ({PAGE_ACCESS}) access
+            "SELECT p.title, access.can_edit FROM ({PAGE_ACCESS}) access
              JOIN pages p ON (p.tenant_id, p.space_id, p.id) = ($1, $2, $4)
              WHERE access.can_read"
         );
-        let title: Option<Vec<u8>> = sqlx::query_scalar(&query)
+        let title: Option<(Vec<u8>, bool)> = sqlx::query_as(&query)
             .bind(address.tenant)
             .bind(address.space)
             .bind(address.account)
@@ -67,11 +67,13 @@ impl Store {
             .fetch_optional(&self.0)
             .await?;
         title
-            .map(|title| {
+            .map(|(title, can_edit)| {
                 Ok(Page {
                     id: address.page,
                     section_id: Uuid::nil(),
+                    parent_id: None,
                     title: decode_title(title, "pages.title")?,
+                    can_edit,
                 })
             })
             .transpose()

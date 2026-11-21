@@ -121,7 +121,7 @@ async fn account_for_update(
         .await
 }
 
-async fn configure_sharing(
+pub(super) async fn configure_sharing(
     conn: &mut PgConnection,
     tenant: Uuid,
     allow_guests: Option<bool>,

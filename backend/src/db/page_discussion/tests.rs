@@ -129,13 +129,17 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
     );
     assert_eq!(
         store
-            .write_comment(&reader, topic(Uuid::new_v4(), vec![]))
+            .write_comment(&reader, "http://localhost", topic(Uuid::new_v4(), vec![]))
             .await?,
         DiscussionOutcome::Denied
     );
     let key = Uuid::new_v4();
     let result = store
-        .write_comment(&commenter, topic(key, vec![reader.account, reader.account]))
+        .write_comment(
+            &commenter,
+            "http://localhost",
+            topic(key, vec![reader.account, reader.account]),
+        )
         .await?;
     let DiscussionOutcome::Applied(created) = result else {
         panic!("comment creation failed: {result:?}")
@@ -143,7 +147,11 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
     assert_eq!(
         created,
         match store
-            .write_comment(&commenter, topic(key, vec![reader.account]))
+            .write_comment(
+                &commenter,
+                "http://localhost",
+                topic(key, vec![reader.account])
+            )
             .await?
         {
             DiscussionOutcome::Applied(replay) => replay,
@@ -151,12 +159,15 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
         }
     );
     assert_eq!(
-        store.write_comment(&commenter, topic(key, vec![])).await?,
+        store
+            .write_comment(&commenter, "http://localhost", topic(key, vec![]))
+            .await?,
         DiscussionOutcome::OperationConflict
     );
     let visible = store
         .discussion_threads(
             &reader,
+            "http://localhost",
             ThreadQuery::Filter {
                 status: DiscussionStatus::Active,
                 offset: 0,
@@ -196,6 +207,7 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
         store
             .discussion_threads(
                 &reader,
+                "http://localhost",
                 ThreadQuery::Filter {
                     status: DiscussionStatus::Active,
                     offset: 0
@@ -206,7 +218,11 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
     );
     assert_eq!(
         store
-            .write_comment(&commenter, topic(Uuid::new_v4(), vec![reader.account]))
+            .write_comment(
+                &commenter,
+                "http://localhost",
+                topic(Uuid::new_v4(), vec![reader.account])
+            )
             .await?,
         DiscussionOutcome::MentionUnavailable
     );
@@ -218,6 +234,7 @@ async fn targeted_comments_can_be_retried_and_mentions_follow_permission(
         store
             .discussion_threads(
                 &other,
+                "http://localhost",
                 ThreadQuery::Filter {
                     status: DiscussionStatus::Active,
                     offset: 0
@@ -245,7 +262,11 @@ async fn versioned_status_preserves_reopened_thread_and_rejects_unauthorized_tra
         ..owner
     };
     let DiscussionOutcome::Applied(created) = store
-        .write_comment(&commenter, topic(Uuid::new_v4(), vec![]))
+        .write_comment(
+            &commenter,
+            "http://localhost",
+            topic(Uuid::new_v4(), vec![]),
+        )
         .await?
     else {
         panic!("author must create thread")
@@ -256,10 +277,14 @@ async fn versioned_status_preserves_reopened_thread_and_rejects_unauthorized_tra
         operation_id: Uuid::new_v4(),
     };
     assert_eq!(
-        store.write_comment(&reader, resolve.clone()).await?,
+        store
+            .write_comment(&reader, "http://localhost", resolve.clone())
+            .await?,
         DiscussionOutcome::Denied
     );
-    let result = store.write_comment(&commenter, resolve.clone()).await?;
+    let result = store
+        .write_comment(&commenter, "http://localhost", resolve.clone())
+        .await?;
     assert!(matches!(result, DiscussionOutcome::Applied(_)));
     let reply = CommentCommand::Reply {
         thread_id: created.id,
@@ -268,12 +293,15 @@ async fn versioned_status_preserves_reopened_thread_and_rejects_unauthorized_tra
         operation_id: Uuid::new_v4(),
     };
     assert_eq!(
-        store.write_comment(&commenter, reply.clone()).await?,
+        store
+            .write_comment(&commenter, "http://localhost", reply.clone())
+            .await?,
         DiscussionOutcome::ThreadConflict
     );
     let resolved = store
         .discussion_threads(
             &reader,
+            "http://localhost",
             ThreadQuery::One(ThreadSelection {
                 id: created.id,
                 replies: ReplyPage::Start(0),
@@ -292,17 +320,27 @@ async fn versioned_status_preserves_reopened_thread_and_rejects_unauthorized_tra
         operation_id: Uuid::new_v4(),
     };
     assert!(matches!(
-        store.write_comment(&owner, reopen).await?,
+        store
+            .write_comment(&owner, "http://localhost", reopen)
+            .await?,
         DiscussionOutcome::Applied(_)
     ));
-    assert_eq!(store.write_comment(&commenter, resolve).await?, result);
-    let replied = store.write_comment(&commenter, reply).await?;
+    assert_eq!(
+        store
+            .write_comment(&commenter, "http://localhost", resolve)
+            .await?,
+        result
+    );
+    let replied = store
+        .write_comment(&commenter, "http://localhost", reply)
+        .await?;
     let DiscussionOutcome::Applied(replied) = replied else {
         panic!("reply must succeed: {replied:?}")
     };
     let active = store
         .discussion_threads(
             &reader,
+            "http://localhost",
             ThreadQuery::One(ThreadSelection {
                 id: created.id,
                 replies: ReplyPage::Target(replied.id),
@@ -340,8 +378,9 @@ async fn anchors_validate_published_revision_and_keep_history_private(
         "anchor": {"revision": "1", "quote": "Текст цитаты", "start": 0, "end": 12,
             "before": "", "after": ""}
     }))?;
-    let DiscussionOutcome::Applied(created) =
-        store.write_comment(&commenter, anchored.clone()).await?
+    let DiscussionOutcome::Applied(created) = store
+        .write_comment(&commenter, "http://localhost", anchored.clone())
+        .await?
     else {
         panic!("valid published quote must attach");
     };
@@ -355,7 +394,9 @@ async fn anchors_validate_published_revision_and_keep_history_private(
     .execute(&pool)
     .await?;
     assert_eq!(
-        store.write_comment(&commenter, anchored.clone()).await?,
+        store
+            .write_comment(&commenter, "http://localhost", anchored.clone())
+            .await?,
         DiscussionOutcome::Applied(created)
     );
     let mut stale = anchored;
@@ -367,7 +408,9 @@ async fn anchors_validate_published_revision_and_keep_history_private(
         *operation_id = Uuid::new_v4();
     }
     assert_eq!(
-        store.write_comment(&commenter, stale).await?,
+        store
+            .write_comment(&commenter, "http://localhost", stale)
+            .await?,
         DiscussionOutcome::AnchorConflict
     );
     let query = || {
@@ -376,13 +419,19 @@ async fn anchors_validate_published_revision_and_keep_history_private(
             replies: ReplyPage::Start(0),
         })
     };
-    let result = store.discussion_threads(&reader, query()).await?.unwrap();
+    let result = store
+        .discussion_threads(&reader, "http://localhost", query())
+        .await?
+        .unwrap();
     let thread = serde_json::to_value(&result.threads[0])?;
     assert_eq!(thread["body"], "Цитата для уточнения");
     assert_eq!(thread["anchor"]["state"], "missing");
     assert_eq!(thread["anchor"]["quote"], "");
     assert!(thread["anchor"].get("historyTo").is_none());
-    let result = store.discussion_threads(&owner, query()).await?.unwrap();
+    let result = store
+        .discussion_threads(&owner, "http://localhost", query())
+        .await?
+        .unwrap();
     let original_anchor = result.threads[0].anchor.as_ref().expect("anchor remains");
     assert_eq!(original_anchor.historical_revision, Some(1));
     assert_eq!(

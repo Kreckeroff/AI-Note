@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Север · Каталог пространств</title>
+  <link rel="stylesheet" href="workspace.css?v=tenant-switch-1">
+  <link rel="stylesheet" href="space-catalog.css?v=tenant-switch-1">
+</head>
+<body>
+  <a class="skip-link" href="#main">К содержимому</a>
+  <aside class="review-strip" aria-label="Управление макетом">
+    <span>Макет KB-SPC-02 · 1.1</span>
+    <div class="review-controls">
+      <label id="scenario-label" for="scenario">Сценарий</label>
+      <select class="field" id="scenario">
+        <option value="admin">Администратор организации</option>
+        <option value="creator">Участник с правом создания</option>
+        <option value="member">Участник без права создания</option>
+        <option value="personal">Новая личная среда</option>
+        <option value="empty">Участник без пространств</option>
+        <option value="loading">Загрузка каталога</option>
+        <option value="error">Ошибка загрузки</option>
+      </select>
+      <a class="reference-link" id="editor-reference" href="./#doc/access">Эталон редактора</a>
+      <a class="reference-link" href="?demo=tenants">Демо смены среды</a>
+    </div>
+  </aside>
+
+  <header id="dock" class="catalog-dock">
+    <div class="dock-utility utility-start" id="back-utility" hidden>
+      <a class="btn ghost" href="#spaces" data-icon="left">Пространства</a>
+    </div>
+    <div class="dock-inner">
+      <div class="dock-context" role="group" aria-label="Организация и пространство">
+        <span class="dock-tenant" id="dock-tenant"><span class="brand-mark" data-icon="north"></span><span class="dock-tenant-name" id="dock-tenant-name"></span></span>
+        <span class="dock-context-divider" data-icon="chevron"></span>
+        <details class="space-selector" id="space-selector">
+          <summary class="dock-space" id="dock-context">
+            <span data-icon="folder"></span><span class="dock-space-name" id="dock-name"></span><span data-icon="down"></span>
+          </summary>
+          <section class="switcher-panel" aria-label="Переключатель пространств">
+            <label class="catalog-search" for="switcher-search">
+              <span class="sr-only">Поиск пространства в меню</span><span class="search-icon" data-icon="search"></span>
+              <input class="field" id="switcher-search" type="search" placeholder="Найти пространство" autocomplete="off" maxlength="100">
+            </label>
+            <div class="switcher-rows" id="switcher-results" aria-label="Доступные варианты"></div>
+            <a class="switcher-all" href="#spaces" data-icon="layers">Все пространства<span data-icon="arrow"></span></a>
+          </section>
+        </details>
+      </div>
+      <span class="dock-rule" aria-hidden="true"></span>
+      <nav aria-label="Рабочие разделы">
+        <a class="dock-link" href="#spaces" id="spaces-nav" aria-current="page" data-icon="layers">Пространства</a>
+        <span class="dock-link" id="documents-nav" aria-current="page" data-icon="docs" hidden>Документы</span>
+      </nav>
+      <div class="dock-actions">
+        <button class="btn ghost icon" type="button" id="dock-search" aria-label="Найти пространство" title="Найти пространство" data-icon="search"></button>
+        <button class="btn ghost icon mobile-tools theme-toggle" type="button" aria-label="Светлая тема" title="Светлая тема" data-icon="sun"></button>
+      </div>
+    </div>
+    <div class="dock-utility utility-end">
+      <button class="btn ghost icon theme-toggle" type="button" aria-label="Светлая тема" title="Светлая тема" data-icon="sun"></button>
+      <span class="dock-rule" aria-hidden="true"></span>
+      <span class="actor"><span class="avatar" id="actor-avatar" aria-hidden="true"></span><span class="sr-only" id="actor-name"></span></span>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="catalog" id="catalog" aria-labelledby="catalog-heading">
+      <header class="catalog-heading">
+        <div>
+          <h1 id="catalog-heading" tabindex="-1">Пространства</h1>
+          <p id="catalog-scope" class="muted"></p>
+        </div>
+        <button class="btn primary catalog-create" id="create-space" type="button" data-icon="plus">Создать пространство</button>
+      </header>
+
+      <div class="catalog-toolbar" id="catalog-toolbar">
+        <label class="catalog-search" for="space-search">
+          <span class="sr-only">Поиск по названию пространства</span>
+          <span class="search-icon" data-icon="search"></span>
+          <input class="field" id="space-search" type="search" placeholder="Поиск по названию" autocomplete="off" maxlength="100">
+        </label>
+        <div class="catalog-filters" role="group" aria-label="Фильтр пространств">
+          <button class="btn ghost" id="all-filter" type="button" data-filter="all" aria-pressed="true">Все доступные</button>
+          <button class="btn ghost" type="button" data-filter="mine" aria-pressed="false">Мои</button>
+          <button class="btn ghost" type="button" data-filter="membership" aria-pressed="false">По членству</button>
+        </div>
+      </div>
+
+      <div class="result-summary"><p id="result-count" role="status" aria-live="polite"></p></div>
+      <section class="catalog-table" id="catalog-table" aria-label="Список пространств">
+        <div class="catalog-table-heading catalog-columns" aria-hidden="true">
+          <span>Название</span><span>Владелец</span><span>Мой доступ</span><span></span>
+        </div>
+        <ul id="space-list" class="space-list" aria-label="Пространства по алфавиту"></ul>
+        <nav class="catalog-pagination" id="pagination" aria-label="Страницы каталога" hidden>
+          <span class="muted" id="page-range"></span>
+          <div>
+            <button class="btn" id="previous-page" type="button" data-icon="left">Назад</button>
+            <span id="page-number"></span>
+            <button class="btn next-page" id="next-page" type="button">Дальше<span data-icon="arrow"></span></button>
+          </div>
+        </nav>
+      </section>
+      <div class="catalog-state" id="catalog-state" hidden></div>
+    </section>
+
+    <section class="doc-layout space-workbench" id="space-workbench" data-context="false" data-tree="false" aria-labelledby="space-title" hidden>
+      <aside class="sidebar" aria-label="Дерево пространства">
+        <div class="space-card space-card-static">
+          <span class="space-emblem" data-icon="folder"></span>
+          <span class="grow"><strong id="tree-space"></strong><span class="small muted" id="tree-environment"></span></span>
+        </div>
+        <div class="tree-menu"><a class="side-action" href="#spaces" data-icon="layers">Все пространства</a></div>
+        <div class="sidebar-heading">Разделы</div>
+        <p class="small muted tree-empty">Пока нет разделов</p>
+      </aside>
+      <div class="doc-center">
+        <div class="doc-bar">
+          <div class="breadcrumbs" aria-label="Путь">
+            <a href="#spaces">Пространства</a><span data-icon="chevron"></span><strong id="crumb-space"></strong>
+          </div>
+          <button class="btn ghost drawer-tree" type="button" id="tree-toggle" data-icon="side" aria-expanded="false">Разделы</button>
+        </div>
+        <article class="article space-article">
+          <div class="space-article-title">
+            <span class="state-icon" data-icon="folder"></span>
+            <div>
+              <h1 id="space-title" tabindex="-1"></h1>
+              <div class="space-flags"><span class="tag" data-icon="lock">Закрытое</span><span class="tag" id="space-access"></span></div>
+            </div>
+          </div>
+          <div class="space-empty-content">
+            <span class="state-icon" data-icon="layers"></span>
+            <h2>В пространстве пока нет разделов</h2>
+          </div>
+        </article>
+      </div>
+    </section>
+    <div class="catalog catalog-state" id="space-denied" hidden>
+      <span class="state-icon" data-icon="lock"></span>
+      <h1 tabindex="-1">Пространство не найдено</h1>
+      <a class="btn" href="#spaces">Вернуться в каталог</a>
+    </div>
+  </main>
+
+  <dialog id="panel" class="workspace-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-header">
+      <div><h2 id="dialog-title">Создать пространство</h2><p class="small muted" id="creation-environment"></p></div>
+      <button class="btn icon ghost" id="close-dialog" type="button" data-icon="close" aria-label="Закрыть"></button>
+    </div>
+    <form class="dialog-body" id="creation-form" novalidate>
+      <label class="dialog-field" for="space-name">Название</label>
+      <input class="field" id="space-name" name="name" required autofocus aria-describedby="name-help name-error" placeholder="Например, Команда продукта">
+      <p class="small muted name-help" id="name-help">От 1 до 100 символов. Выберите уникальное имя среди своих пространств в этой среде.</p>
+      <p class="small name-error" id="name-error" role="alert" hidden></p>
+      <p class="creation-note"><span data-icon="lock"></span><span><strong>Закрытое пространство</strong><br>Вы станете владельцем. Администраторы этой среды смогут просматривать содержимое.</span></p>
+      <div class="dialog-buttons">
+        <button class="btn" id="cancel-dialog" type="button">Отмена</button>
+        <button class="btn primary" type="submit">Создать</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="tenant-panel" class="workspace-dialog" aria-labelledby="tenant-title">
+    <header class="dialog-header">
+      <h2 id="tenant-title">Выбрать среду</h2>
+      <button class="btn ghost icon" id="close-tenant-panel" type="button" data-icon="close" aria-label="Закрыть"></button>
+    </header>
+    <div class="dialog-body" id="tenant-options"></div>
+  </dialog>
+  <script type="module" src="space-catalog.mjs?v=tenant-catalog-2"></script>
+</body>
+</html>

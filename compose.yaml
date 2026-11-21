@@ -10,6 +10,7 @@ services:
       SEVER_HTTP_HOST: "localhost"
       SEVER_PORT: "4125"
       SEVER_SELF_REGISTRATION: "false"
+      SEVER_TEAMSTREAM_ORIGIN: "http://127.0.0.1:4124"
       SEVER_SHARING_SECRET: "${SEVER_SHARING_SECRET:-}"
       SEVER_SHARING_SENDMAIL: "${SEVER_SHARING_SENDMAIL:-}"
       SEVER_SHARING_FROM: "${SEVER_SHARING_FROM:-}"
@@ -21,6 +22,24 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "/bin/bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/4125"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  teamstream:
+    build: .
+    restart: unless-stopped
+    command: ["sever", "serve-teamstream"]
+    environment:
+      SEVER_BIND_ADDR: "0.0.0.0"
+      SEVER_PORT: "4124"
+      SEVER_TEAMSTREAM_PARENT_ORIGIN: "http://localhost:4125"
+      SEVER_TEAMSTREAM_ORIGIN: "http://127.0.0.1:4124"
+    networks: [teamstream-player]
+    ports:
+      - "127.0.0.1:4124:4124"
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/4124"]
       interval: 3s
       timeout: 2s
       retries: 10
@@ -42,3 +61,6 @@ services:
 
 volumes:
   postgres-data:
+
+networks:
+  teamstream-player:

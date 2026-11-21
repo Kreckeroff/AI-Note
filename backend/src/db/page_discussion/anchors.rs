@@ -6,7 +6,7 @@ use crate::{
         PageAddress,
         page_attachments::{CURRENT_ATTACHMENTS, decode_attachments},
     },
-    markdown::render_markdown_with_attachments,
+    markdown::render_document,
     text::{markdown_to_text, normalize_line_endings, revision_number},
 };
 
@@ -40,6 +40,7 @@ pub(super) struct PublishedText {
 pub(super) async fn published_text(
     tx: &mut PgConnection,
     address: &PageAddress,
+    origin: &str,
 ) -> Result<PublishedText, sqlx::Error> {
     let source: PageSource = sqlx::query_as(&format!(
         "SELECT p.markdown, p.content_is_markdown, p.content_revision, {CURRENT_ATTACHMENTS} AS attachments
@@ -56,13 +57,19 @@ pub(super) async fn published_text(
     let text = if source.content_is_markdown {
         let attachments = decode_attachments(&source.attachments)?;
         let source = normalize_line_endings(&source.markdown);
-        let html = render_markdown_with_attachments(&source, &|id, inline| {
-            attachments
-                .iter()
-                .find(|file| file.id == id && file.publication.is_some() && (!inline || file.image))
-                // The path affects only HTML attributes, which are discarded below.
-                .map(|_| "/")
-        });
+        let html = render_document(
+            &source,
+            &|id, inline| {
+                attachments
+                    .iter()
+                    .find(|file| {
+                        file.id == id && file.publication.is_some() && (!inline || file.image)
+                    })
+                    // The path affects only HTML attributes, which are discarded below.
+                    .map(|_| "/")
+            },
+            origin,
+        );
         text_content(html.as_str())
     } else {
         markdown_to_text(&source.markdown)
@@ -273,8 +280,11 @@ mod tests {
 
     #[test]
     fn published_markdown_projection_follows_dom_text_and_scalar_offsets() {
-        let html =
-            render_markdown_with_attachments("# Привет **🚀**\n\n`&lt; < > \" '`", &|_, _| None);
+        let html = render_document(
+            "# Привет **🚀**\n\n`&lt; < > \" '`",
+            &|_, _| None,
+            "http://localhost",
+        );
         let text = text_content(html.as_str());
         assert_eq!(text, "Привет 🚀&lt; < > \" '");
         let input = AnchorInput {

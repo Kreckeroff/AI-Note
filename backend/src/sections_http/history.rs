@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     cover_image::COVER_IMAGE_CONTENT_TYPE,
     db::{AttachmentLookup, PageAddress, PageHistory, RestorePageRevision, Store},
-    http::{self, Form, FormError, html, plain, redirect},
+    http::{self, Form, FormError, html, html_with_external_frames, plain, redirect},
     views::{self, history as view},
     workspace::{DocumentsRoute, HistoryTarget, canonical_uuid, revision_number},
 };
@@ -143,16 +143,20 @@ pub(super) async fn handle(
             } else {
                 None
             };
-            Ok(html(
-                StatusCode::OK,
-                view::snapshot(
-                    &links,
-                    &snapshot,
-                    &history,
-                    query.get("restore") == "1",
-                    quote.as_ref(),
-                ),
-            ))
+            let preview = view::embed_preview(&links, &snapshot, origin);
+            let content = view::snapshot(
+                &links,
+                &snapshot,
+                &history,
+                query.get("restore") == "1",
+                quote.as_ref(),
+                preview.as_ref(),
+            );
+            Ok(if preview.is_some() {
+                html_with_external_frames(StatusCode::OK, content, request.extensions().get())
+            } else {
+                html(StatusCode::OK, content)
+            })
         }
         HistoryTarget::Cover(revision) => {
             let Some(bytes) = store.page_revision_cover(address, revision).await? else {

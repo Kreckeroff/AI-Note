@@ -6,7 +6,7 @@ use super::{SharingFailure, SharingOperation, manager_tx, tenant_allows};
 use crate::{
     clock::now_ms,
     db::{PageAddress, Store, sections::decode_title},
-    markdown::attachment_image_ids,
+    markdown::{attachment_image_ids, embed_presence},
 };
 
 #[derive(Serialize)]
@@ -51,7 +51,8 @@ impl Store {
     pub(crate) async fn public_link_panel(
         &self,
         address: &PageAddress,
-    ) -> Result<(Option<Uuid>, PublicPolicy), SharingFailure> {
+        origin: &str,
+    ) -> Result<(Option<Uuid>, PublicPolicy, (bool, bool)), SharingFailure> {
         let mut tx = manager_tx(self, address).await?;
         let allowed = tenant_allows(&mut tx, address.tenant).await?.1;
         // Serialize snapshot version and link membership with all space-wide mutations.
@@ -88,6 +89,15 @@ impl Store {
         } else {
             None
         };
+        let source = sqlx::query_scalar::<_, String>(
+            "SELECT markdown FROM pages
+             WHERE (tenant_id,space_id,id) = ($1,$2,$3) AND content_is_markdown",
+        )
+        .bind(address.tenant)
+        .bind(address.space)
+        .bind(address.page)
+        .fetch_optional(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok((
             link,
@@ -97,6 +107,7 @@ impl Store {
                 version,
                 affected,
             },
+            source.map_or((false, false), |source| embed_presence(&source, origin)),
         ))
     }
 

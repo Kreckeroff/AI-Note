@@ -110,6 +110,7 @@ function sideAction(action, text, glyph, detail = '', value = '') {
 
 function sidebar(data, doc, view) {
   const space = spaceInfo(data);
+  const demoHome = data.tenantDemo && data.space !== 'north' && data.space !== 'lab';
   function branch(parent = '') {
     return data.documents.filter(item => item.parent === parent && item.space === data.space && canList(data,item)).map(item => {
       const isFolder = item.kind === 'folder';
@@ -124,7 +125,7 @@ function sidebar(data, doc, view) {
   }
   return `<aside class="sidebar" aria-label="Дерево пространства">
     <button class="space-card" type="button" data-action="spaces"><span class="space-emblem">${icon(space.glyph,20)}</span><span class="grow"><strong>${html(space.name)}</strong><small class="muted">${html(space.description)}</small></span>${icon('down',14)}</button>
-    <div class="tree-menu">${sideAction('search','Найти в пространстве','search','⌘ K')}${sideAction('open-doc','Главная','home','',data.space === 'north' ? 'welcome' : 'lab-notes')}</div>
+    <div class="tree-menu">${sideAction('search','Найти в пространстве','search','⌘ K')}${sideAction(demoHome ? 'choose-space' : 'open-doc','Главная','home','',demoHome ? data.space : data.space === 'north' ? 'welcome' : 'lab-notes')}</div>
     <div class="sidebar-heading"><span>Документы</span>${ownsSpace(data) || memberRole(data,data.space) === 'edit' ? button('create-doc','','plus',{className:'ghost',title:'Создать страницу или раздел'}) : ''}</div>
     <nav class="tree-scroll" aria-label="Разделы и страницы">${branch() || '<p class="muted small">Нет доступных страниц.</p>'}</nav>
     <div class="side-foot">${sideAction('account','Учётная запись','user')}${sideAction('settings','Настройки пространства','settings')}</div>
@@ -253,7 +254,10 @@ export function renderDocuments(data, doc, view) {
   const reading = available && doc.kind === 'page';
   const rendered = reading ? markdown(doc.body) : {markup:'',headings:[]};
   let content = '<div class="empty-page"><span class="entity-icon">'+icon('lock')+'</span><h1>Страница недоступна</h1><p class="muted">Попросите владельца выдать доступ к этому материалу.</p>'+button('account','Сменить профиль','user')+'</div>';
-  if (reading) {
+  if (view.spaceEmpty) {
+    const fallback = data.documents.some(item => item.space === data.space) ? 'Нет доступных страниц.' : 'В пространстве пока нет разделов.';
+    content = `<div class="empty-page"><span class="entity-icon">${icon('folder')}</span><h1>${html(spaceInfo(data).name)}</h1><p class="muted">${fallback}</p></div>`;
+  } else if (reading) {
     const author = profileFor(data,doc.author);
     content = view.editing && canWrite(data,doc) ? editor(doc,data.coverImages) : `${cover(doc,data.coverImages)}
       <div class="page-meta"><span class="page-author">${avatar(author,true)} ${html(author.name)}</span>

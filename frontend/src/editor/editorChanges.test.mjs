@@ -9,8 +9,9 @@ const imports = registerHooks({
 });
 const {parseMarkdown} = await import('./markdownModel.ts');
 const {
-  applyCommand, applySourceCommand, applySlashCommand, pasteMarkdown, applyLink,
+  applyCommand, applySourceCommand, insertMenuBlock, pasteMarkdown, applyLink,
   insertVisual, removeVisual, moveListItem, toggleTask, updateCodeLanguage, exitCodeBlock,
+  insertExternalEmbed, updateExternalEmbed,
 } = await import('./editorChanges.ts');
 imports.deregister();
 
@@ -20,6 +21,54 @@ const place = (source, word) => {
 };
 
 const caret = (position) => ({start:position,end:position});
+
+test('block picker inserts the selected heading level below the active paragraph and preserves adjacent Markdown', () => {
+  const source = '**Один** абзац\n\nТретий';
+  for (const [command, prefix] of [['heading-one','#'],['heading','##'],['heading-three','###']]) {
+    const result = insertMenuBlock(source, false, caret(3), command);
+    assert.equal(result.source, '**Один** абзац\n\n' + prefix + ' Заголовок\n\nТретий');
+    assert.equal(result.source.slice(0,result.start).endsWith('Заголовок'), true);
+    assert.equal(result.start, result.end);
+    assert.equal(insertMenuBlock('/h', false, {start:0,end:2}, command).source, prefix+' Заголовок');
+  }
+});
+
+test('opening blocks from the picker uses the empty line or the end of a nested list', () => {
+  const list = '- Один\n  - Внутри\n- Последний';
+  assert.equal(insertMenuBlock(list, false, caret(3), 'quote').source, list+'\n\n> Цитата');
+  assert.equal(insertMenuBlock('', true, caret(0), 'task').source, '- [ ] Пункт списка');
+  assert.equal(insertMenuBlock('сохрани', false, {start:1,end:3}, 'quote').source, 'сохрани');
+  const embed = insertExternalEmbed('Первый\n\nВторой', false, caret(2), 'https://video.example.test/watch');
+  assert.ok(embed.source.startsWith('Первый\n\n```sever-embed\nhttps://video.example.test/watch\n```\n\nВторой'));
+});
+
+test('an embed consumes the slash command, preserves its paragraph and keeps a caret after the block', () => {
+  const address = 'https://video.example.test/player?a=1&b=2#watch';
+  const source = 'До **пример** /встроить и после';
+  const inserted = insertExternalEmbed(source, false, place(source, '/встроить'), address);
+  const fence = `\`\`\`sever-embed\n${address}\n\`\`\``;
+  assert.equal(inserted.source, `До **пример**  и после\n\n${fence}\n\n`);
+  assert.equal(inserted.start, inserted.source.length - 1);
+  assert.equal(inserted.end, inserted.start);
+  assert.equal(insertExternalEmbed('/встроить', true, {start:0,end:9}, address).source, fence + '\n\n');
+});
+
+test('changing or removing an embed touches only the matching atomic block', () => {
+  const address = 'https://video.example.test/embed';
+  const next = 'https://teamstream.example.test/view?id=8#section';
+  const fence = `~~~sever-embed\n${address}\n~~~`;
+  const source = `${fence}\n\nРаздел\n\n${fence}`;
+  const second = {start: source.lastIndexOf(fence), end:source.length};
+  const updated = updateExternalEmbed(source, false, second, address, next);
+  assert.equal(updated.change.source, source.slice(0, second.start) + fence.replace(address, next));
+  assert.equal(source.slice(updated.before.start, updated.before.end), address);
+  assert.equal(updateExternalEmbed(updated.change.source, false, second, address, next), undefined);
+  const removed = updateExternalEmbed(source, false, second, address);
+  assert.equal(removed.change.source, source.slice(0, second.start));
+  assert.deepEqual(removed.before, second);
+  assert.equal(insertVisual(fence, false, caret(fence.length), 'После', 'typed').source, fence + '\n\nПосле');
+  assert.equal(insertVisual(fence, false, caret(fence.indexOf('https') + 1), 'x').source, fence);
+});
 
 test('inserting a local image preserves adjacent text and escapes its alternate description', async () => {
   const {insertAttachmentImage} = await import('./editorChanges.ts');
@@ -174,11 +223,11 @@ test('a task changes only its state marker, and continuation adds an unchecked s
 
 test('slash commands replace the request and keep the rest of a nonempty block together', () => {
   const source = 'До \\/цит после  \n\nСосед';
-  const edited = applySlashCommand(source,false,place(source,'\\/цит'),'quote');
+  const edited = insertMenuBlock(source,false,place(source,'\\/цит'),'quote');
   assert.equal(edited.source,'До  после  \n\n> Цитата\n\nСосед');
   const exit = insertVisual(edited.source,false,edited,'\n','paragraph');
   assert.ok(!parseMarkdown(exit.source,false).blocks.find(block=>block.start<=exit.start && exit.start<=block.end).kind.includes('quote'));
-  const rule = applySlashCommand('\\/разд',true,place('\\/разд','\\/разд'),'rule');
+  const rule = insertMenuBlock('\\/разд',true,place('\\/разд','\\/разд'),'rule');
   assert.equal(parseMarkdown(rule.source,false).blocks[0].kind,'rule');
   assert.equal(rule.source,'---\n\n');
 });
@@ -187,7 +236,7 @@ test('slash insertion and Markdown paste preserve list ancestry and following si
   const source = '- Родитель \\/цит\n  - Ребёнок\n- Сосед\n\nПосле';
   const query = place(source,'\\/цит');
   const list = '- Родитель \n  - Ребёнок\n- Сосед';
-  const quoted = applySlashCommand(source,false,query,'quote');
+  const quoted = insertMenuBlock(source,false,query,'quote');
   assert.equal(quoted.source,list + '\n\n> Цитата\n\nПосле');
   assert.equal(quoted.start,quoted.source.indexOf('Цитата') + 'Цитата'.length);
   const child = parseMarkdown(quoted.source,false).blocks[1];
@@ -197,7 +246,7 @@ test('slash insertion and Markdown paste preserve list ancestry and following si
     source.replace('\n\nПосле','\n\n# Тема\n\nПосле'));
 
   const quote = '> Первая \\/разд\n> Вторая\n\nПосле';
-  assert.equal(applySlashCommand(quote,false,place(quote,'\\/разд'),'rule').source,
+  assert.equal(insertMenuBlock(quote,false,place(quote,'\\/разд'),'rule').source,
     '> Первая \n> Вторая\n\n---\n\nПосле');
 });
 
@@ -518,4 +567,16 @@ test('typed delimiters autoformat and code preserves literal nested syntax', () 
   assert.deepEqual([caret, legacy], [source.length, false]);
   const followed = insertVisual(source, false,{start:caret,end:caret}, '!', 'typed');
   assert.equal(followed.source, 'До `**жирный**`\\!');
+});
+
+test('plus and slash insert below complete multiline paragraphs and list continuations', () => {
+  for (const group of ['Первая строка\nвторая строка', '- Первый\nпродолжение\n- Второй']) {
+    const source = group + '\n\nДальше';
+    const offset = source.indexOf('р') + 1;
+    const expected = group + '\n\n> Цитата\n\nДальше';
+    assert.equal(insertMenuBlock(source, false, caret(offset), 'quote').source, expected);
+    const token = '/цит';
+    const typed = source.slice(0, offset) + token + source.slice(offset);
+    assert.equal(insertMenuBlock(typed, false, place(typed, token), 'quote').source, expected);
+  }
 });

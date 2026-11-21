@@ -1,4 +1,4 @@
-use std::{fmt::Write, io::Cursor};
+use std::io::Cursor;
 
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 
@@ -112,19 +112,6 @@ pub(super) fn decode_name(encoded: &str) -> Option<String> {
             .chars()
             .any(|ch| ch.is_control() || matches!(ch, '/' | '\\')))
     .then_some(name)
-}
-
-pub(super) fn content_disposition(name: &str, inline: bool) -> String {
-    let disposition = if inline { "inline" } else { "attachment" };
-    let mut value = format!("{disposition}; filename=\"attachment\"; filename*=UTF-8''");
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            value.push(char::from(byte));
-        } else {
-            let _ = write!(value, "%{byte:02X}");
-        }
-    }
-    value
 }
 
 fn is_text(bytes: &[u8]) -> bool {
@@ -317,7 +304,7 @@ mod tests {
             assert_eq!(decode_name(name), None, "{name}");
         }
         assert_eq!(
-            content_disposition("А +.txt", false),
+            crate::http::content_disposition("А +.txt", false),
             "attachment; filename=\"attachment\"; filename*=UTF-8''%D0%90%20%2B.txt"
         );
     }

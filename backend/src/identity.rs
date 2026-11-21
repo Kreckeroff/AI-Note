@@ -54,6 +54,14 @@ fn derive_password(password: &str, salt: &[u8]) -> [u8; 32] {
     hash
 }
 
+pub(crate) fn password_matches(password: &str, salt: &[u8], expected: &[u8]) -> bool {
+    valid_password(password)
+        && derive_password(password, salt)
+            .as_slice()
+            .ct_eq(expected)
+            .into()
+}
+
 pub(crate) fn prepare_account(
     email: &str,
     name: &str,

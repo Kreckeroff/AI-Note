@@ -1,5 +1,6 @@
 import {useId, useLayoutEffect, useRef, useState, type FormEvent} from 'react';
 import {Icon} from '../Icon';
+import {externalPageEmbedHint, teamStreamPublicHint} from '../editor/pageEmbedInput';
 import {queryTo, roleLabels, useCollaborationQuery, usePageCommand, type PageRole} from './api';
 import {CollaborationTabs} from './CollaborationTabs';
 
@@ -26,6 +27,8 @@ type Invites = {
 type LinkSettings = {
   link: {id: string; href: string | null} | null;
   sharingConfigured: boolean;
+  containsEmbed?: boolean;
+  containsTeamStream?: boolean;
   policy: {allowed: boolean; enabled: boolean; version: number; affected: {id: string; title: string}[]};
 };
 type ShareCommand = ReturnType<typeof usePageCommand>;
@@ -129,7 +132,9 @@ function GuestInvitations({invites, command}: {invites?: Invites; command: Share
 
 type LinkConfirmation = {kind: 'policy'; version: number} | {kind: 'unpublish'; linkId: string};
 
-function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: LinkSettings; command: ShareCommand}) {
+function SharingLinks({pageTo, settings, command, onPublicLinkChange}: {
+  pageTo: string; settings?: LinkSettings; command: ShareCommand; onPublicLinkChange?(active: boolean): void;
+}) {
   const [confirmation, setConfirmation] = useState<LinkConfirmation | null>(null);
   const [notice, setNotice] = useState('');
   if (!settings) {
@@ -165,7 +170,10 @@ function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: L
       label={policy.enabled ? 'Запретить' : undefined}
       onCancel={() => setConfirmation(null)} onConfirm={async () => {
         const action = {action: 'setPublicPolicy', enabled: false, version: policy.version};
-        if (await command.send(action)) setConfirmation(null);
+        if (await command.send(action)) {
+          onPublicLinkChange?.(false);
+          setConfirmation(null);
+        }
       }}
       description={<>
         {confirmation.version !== policy.version && policy.enabled &&
@@ -183,7 +191,10 @@ function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: L
     return <ConfirmAction heading="Отключить публичную ссылку?" command={command}
       label={linkId ? 'Отключить' : undefined}
       onCancel={() => setConfirmation(null)} onConfirm={async () => {
-        if (linkId && await command.send({action: 'unpublish', linkId})) setConfirmation(null);
+        if (linkId && await command.send({action: 'unpublish', linkId})) {
+          onPublicLinkChange?.(false);
+          setConfirmation(null);
+        }
       }}
       description={<p>{linkId ? 'Публичный адрес страницы и её изображений перестанет работать.'
         : 'Эта публичная ссылка уже отключена.'}</p>} />;
@@ -200,6 +211,8 @@ function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: L
       {!sharingConfigured && <p>Публичные адреса не настроены. Обратитесь к администратору.</p>}
       <p>{link ? 'Открывает текущую страницу, обложку и встроенные изображения.'
         : policy.enabled ? 'Публичная ссылка ещё не создана.' : 'Запрещена политикой пространства.'}</p>
+      {settings.containsEmbed === true && (link || sharingConfigured && policy.allowed && policy.enabled) &&
+        <p className="collaboration-hint">{externalPageEmbedHint}{settings.containsTeamStream === true && ` ${teamStreamPublicHint}`}</p>}
       {link ? <>
         {publicHref && <input aria-label="Публичная ссылка" readOnly value={publicHref}
           onFocus={event => event.currentTarget.select()} />}
@@ -213,7 +226,7 @@ function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: L
             onClick={() => setConfirmation({kind: 'unpublish', linkId: link.id})}>Отключить публичную ссылку</button>
         </div>
       </> : <button type="button" className="space-action primary-action" disabled={!sharingConfigured || !policy.allowed || !policy.enabled || command.busy}
-        onClick={() => void command.send({action: 'publish'})}>Создать публичную ссылку</button>}
+        onClick={async () => { if (await command.send({action: 'publish'})) onPublicLinkChange?.(true); }}>Создать публичную ссылку</button>}
     </section>
     <details className="sharing-link-box sharing-policy">
       <summary>Политика пространства</summary>
@@ -229,7 +242,9 @@ function SharingLinks({pageTo, settings, command}: {pageTo: string; settings?: L
   </>;
 }
 
-export function PageSharingDialog({pageTo, title, onDismiss}: {pageTo: string; title: string; onDismiss(): void}) {
+export function PageSharingDialog({pageTo, title, onDismiss, onPublicLinkChange}: {
+  pageTo: string; title: string; onDismiss(): void; onPublicLinkChange?(active: boolean): void;
+}) {
   const id = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -337,7 +352,7 @@ export function PageSharingDialog({pageTo, title, onDismiss}: {pageTo: string; t
             </>}
           </section>
         </>)}
-        {tab === 'link' && <SharingLinks pageTo={pageTo} settings={link?.data} command={command} />}
+        {tab === 'link' && <SharingLinks pageTo={pageTo} settings={link?.data} command={command} onPublicLinkChange={onPublicLinkChange} />}
         {tab === 'requests' && listing?.data && <>
           {listing.data.requests.length ? <ul className="sharing-people">{listing.data.requests.map(item => <li key={item.id}>
             <div className="sharing-person"><strong>{item.name}</strong><small>{requestLabels[item.status]}</small></div>

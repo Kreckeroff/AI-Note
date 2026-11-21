@@ -6,16 +6,19 @@
   <meta name="theme-color" content="#0e1425">
   <title>Север · Рабочее пространство</title>
   <link rel="stylesheet" href="../graph.css">
-  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="workspace.css?v=tenant-switch-1">
+  <script type="importmap">
+    {"imports":{"./model.mjs":"./model.mjs?v=tenant-catalog-2","./documents.mjs":"./documents.mjs?v=tenant-catalog-2"}}
+  </script>
 </head>
-<body>
+<body class="workspace-shell">
   <a class="skip-link" href="#workspace">К рабочей области</a>
-  <header id="dock"></header>
+  <header id="dock" class="editor-dock"></header>
   <main id="workspace" tabindex="-1"></main>
-  <dialog id="panel" aria-labelledby="dialog-title"></dialog>
+  <dialog id="panel" class="workspace-dialog" aria-labelledby="dialog-title"></dialog>
   <div id="notice" role="status" aria-live="polite" hidden></div>
   <noscript>Включите JavaScript, чтобы открыть рабочее пространство.</noscript>
-  <script src="../graph.js"></script>
-  <script type="module" src="workspace.mjs"></script>
+  <script src="../graph.js?v=tenant-switch-2"></script>
+  <script type="module" src="workspace.mjs?v=tenant-catalog-2"></script>
 </body>
 </html>

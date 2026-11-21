@@ -9,6 +9,15 @@ mod public;
 pub(crate) use guests::{GuestAcceptance, GuestPreview};
 pub(crate) use public::{AssetKind, PublicPage};
 
+// Document queries bind tenant, space, account and page as their first four parameters.
+pub(super) const PUBLIC_LINK_IS_ACTIVE: &str = "EXISTS (
+    SELECT 1 FROM public_page_links l
+    JOIN tenant_sharing_policies t ON t.tenant_id = l.tenant_id
+    JOIN space_public_policies s ON (s.tenant_id,s.space_id) = (l.tenant_id,l.space_id)
+    WHERE (l.tenant_id,l.space_id,l.page_id) = ($1,$2,$4)
+      AND l.revoked_at IS NULL AND t.allow_public AND s.enabled
+)";
+
 #[derive(Debug)]
 pub(crate) enum SharingFailure {
     Missing,

@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::text::{escape_html as html, is_js_whitespace, markdown_to_text};
 
 mod blocks;
+mod embeds;
 
 static LINK_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(!?)\[((?:\\[^\n]|[^\\\[\]\n])*)\]\(").expect("Markdown link prefix")
@@ -17,14 +18,29 @@ static LINK_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(Serialize)]
 #[serde(transparent)]
-pub(crate) struct RenderedMarkdown(String);
+pub(crate) struct RenderedMarkdown {
+    html: String,
+    #[serde(skip)]
+    has_embeds: bool,
+    #[serde(skip)]
+    has_teamstream: bool,
+}
 
 impl RenderedMarkdown {
     pub(crate) fn as_str(&self) -> &str {
-        &self.0
+        &self.html
+    }
+
+    pub(crate) fn has_embeds(&self) -> bool {
+        self.has_embeds
+    }
+
+    pub(crate) fn has_teamstream(&self) -> bool {
+        self.has_teamstream
     }
 }
 
+#[cfg(test)]
 pub(crate) fn render_markdown(source: &str) -> RenderedMarkdown {
     render_markdown_with_attachments(source, &|_, _| None)
 }
@@ -36,9 +52,28 @@ pub(crate) fn render_markdown_with_attachments(
     source: &str,
     attachment_url: &AttachmentUrl<'_>,
 ) -> RenderedMarkdown {
-    RenderedMarkdown(blocks::render(source, &|id, image, _| {
-        attachment_url(id, image)
-    }))
+    blocks::render(source, &|id, image, _| attachment_url(id, image), None)
+}
+
+pub(crate) fn render_document(
+    source: &str,
+    attachment_url: &AttachmentUrl<'_>,
+    origin: &str,
+) -> RenderedMarkdown {
+    let origin = Url::parse(origin).ok();
+    blocks::render(
+        source,
+        &|id, image, _| attachment_url(id, image),
+        origin.as_ref().and_then(Url::host_str),
+    )
+}
+
+pub(crate) fn embed_presence(source: &str, origin: &str) -> (bool, bool) {
+    if !source.contains(embeds::LANGUAGE) {
+        return (false, false);
+    }
+    let rendered = render_document(source, &|_, _| None, origin);
+    (rendered.has_embeds(), rendered.has_teamstream())
 }
 
 pub(crate) fn contains_attachment_reference(source: &str, ids: &[Uuid]) -> bool {
@@ -83,15 +118,19 @@ pub(crate) fn without_attachment_references<'a>(
         return std::borrow::Cow::Borrowed(source);
     }
     let spans = RefCell::new(Vec::<Range<usize>>::new());
-    blocks::render(source, &|id, _, markup| {
-        if ids.contains(&id) {
-            // Blocks hand the inline renderer slices of the original source.
-            // Use their byte offsets to keep surrounding Markdown unchanged.
-            let start = markup.as_ptr() as usize - source.as_ptr() as usize;
-            spans.borrow_mut().push(start..start + markup.len());
-        }
-        None
-    });
+    blocks::render(
+        source,
+        &|id, _, markup| {
+            if ids.contains(&id) {
+                // Blocks hand the inline renderer slices of the original source.
+                // Use their byte offsets to keep surrounding Markdown unchanged.
+                let start = markup.as_ptr() as usize - source.as_ptr() as usize;
+                spans.borrow_mut().push(start..start + markup.len());
+            }
+            None
+        },
+        None,
+    );
     let mut spans = spans.into_inner();
     if spans.is_empty() {
         return std::borrow::Cow::Borrowed(source);
@@ -143,6 +182,17 @@ fn link_at(text: &str) -> Option<MarkdownLink<'_>> {
         cursor += 1;
     }
     None
+}
+
+fn internal_page_destination(value: &str) -> Option<&str> {
+    use crate::workspace::{DocumentsTarget, Route};
+
+    match Route::parse(value) {
+        Some(Route::Documents(route)) if matches!(route.target, DocumentsTarget::Page(_)) => {
+            Some(value)
+        }
+        _ => None,
+    }
 }
 
 fn http_destination(value: &str) -> Option<Url> {
@@ -242,6 +292,17 @@ fn inline_text(
                         inline_text(link.label, in_table, false, attachment_url)
                     );
                 }
+            } else if !link.image
+                && !link.label.is_empty()
+                && let Some(destination) =
+                    internal_page_destination(&markdown_to_text(link.destination))
+            {
+                let _ = write!(
+                    output,
+                    "<a href=\"{}\">{}</a>",
+                    html(destination),
+                    inline_text(link.label, in_table, false, attachment_url)
+                );
             } else if !link.image
                 && !link.label.is_empty()
                 && let Some(destination) = http_destination(&markdown_to_text(link.destination))

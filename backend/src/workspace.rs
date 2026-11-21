@@ -11,7 +11,7 @@ use crate::{
     text::{fold_name, js_trim},
 };
 
-pub(crate) const WORKSPACE_PATH: &str = "/workspace";
+pub(crate) use crate::document_path::{WORKSPACE_PATH, page_path, space_path, spaces_path};
 const PAGE_SIZE: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,6 +82,7 @@ pub(crate) struct Catalog {
 
 pub(crate) struct WorkspaceContext {
     pub tenant: Tenant,
+    pub account_id: Uuid,
     pub account_name: String,
     pub tenants: Vec<Tenant>,
     pub available_spaces: Vec<Space>,
@@ -147,6 +148,7 @@ impl WorkspaceContext {
         };
         Self {
             tenant,
+            account_id: principal.id,
             account_name: principal.name.clone(),
             tenants,
             available_spaces: spaces,
@@ -171,6 +173,7 @@ pub(crate) enum DocumentsTarget {
     Sections,
     Page(Uuid),
     EditPage(Uuid),
+    RenamePage(Uuid),
     UploadCover(Uuid),
     CoverImage {
         page: Uuid,
@@ -305,6 +308,7 @@ impl Route {
                         match parts.next() {
                             None => DocumentsTarget::Page(page),
                             Some("edit") => DocumentsTarget::EditPage(page),
+                            Some("rename") => DocumentsTarget::RenamePage(page),
                             Some("cover") => match parts.next() {
                                 None => DocumentsTarget::UploadCover(page),
                                 Some(id) => DocumentsTarget::CoverImage {
@@ -414,6 +418,7 @@ impl Route {
                     target: DocumentsTarget::Sections
                         | DocumentsTarget::Pages(_)
                         | DocumentsTarget::EditPage(_)
+                        | DocumentsTarget::RenamePage(_)
                         | DocumentsTarget::UploadCover(_)
                         | DocumentsTarget::Attachment {
                             target: AttachmentTarget::Upload { .. },
@@ -436,16 +441,8 @@ pub(crate) fn canonical_uuid(value: &str) -> Option<Uuid> {
 
 pub(crate) use crate::text::revision_number;
 
-pub(crate) fn spaces_path(tenant: Uuid) -> String {
-    format!("{WORKSPACE_PATH}/{tenant}/spaces")
-}
-
 pub(crate) fn new_space_path(tenant: Uuid) -> String {
     format!("{}/new", spaces_path(tenant))
-}
-
-pub(crate) fn space_path(tenant: Uuid, space: Uuid) -> String {
-    format!("{}/{space}", spaces_path(tenant))
 }
 
 pub(crate) fn sections_path(tenant: Uuid, space: Uuid) -> String {
@@ -462,10 +459,6 @@ pub(crate) fn pages_path(tenant: Uuid, space: Uuid, section: Uuid) -> String {
 
 pub(crate) fn new_page_path(tenant: Uuid, space: Uuid, section: Uuid) -> String {
     format!("{}/new", pages_path(tenant, space, section))
-}
-
-pub(crate) fn page_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {
-    format!("{}/pages/{page}", space_path(tenant, space))
 }
 
 pub(crate) fn page_edit_path(tenant: Uuid, space: Uuid, page: Uuid) -> String {

@@ -13,11 +13,17 @@ import {useSharedDraft} from './collaboration/useSharedDraft';
 import {coverLabel, CoverConflictOptions, CoverGallery, PageCoverArt} from './editor/CoverGallery';
 import {DraftDialogs, type DialogValue} from './editor/DraftDialogs';
 import {createDraftHistory, type DraftEditKind, type DraftFrame, type DraftHistoryDirection} from './editor/draftHistory';
-import {applyLink, attachmentRanges, insertAttachmentImage, pasteMarkdown, removeAttachmentReferences, type EditorChange} from './editor/editorChanges';
+import {applyLink, attachmentRanges, insertAttachmentImage, insertExternalEmbed, pasteMarkdown, removeAttachmentReferences,
+  updateExternalEmbed, type EditorChange} from './editor/editorChanges';
 import {ListStyleMenu} from './editor/ListStyleMenu';
-import type {SourceRange} from './editor/markdownModel';
+import {BlockInsertButton} from './editor/BlockInsertButton';
+import {MarkdownFileImport} from './editor/MarkdownFileImport';
+import {maxMarkdownSourceLength} from './editor/markdownFile';
+import {parseMarkdown, type SelectionFormatting, type SourceRange} from './editor/markdownModel';
 import {PageAttachmentDialog, type AttachmentCompletion, type AttachmentDialogRequest} from './editor/PageAttachmentDialog';
 import {PageAttachmentList} from './editor/PageAttachmentList';
+import {PageEmbedDialog} from './editor/PageEmbedDialog';
+import {externalPageEmbedHint, teamStreamPublicHint} from './editor/pageEmbedInput';
 import {addDraftAttachment, removeDraftAttachment, type AttachmentDraft, type PageAttachment} from './editor/pageAttachments';
 import {chooseCoverDraft, resolveCoverDraft, type CoverChoice, type CoverDraft, type CoverView} from './editor/pageCover';
 import {
@@ -27,7 +33,6 @@ import {
 import type {PageEditorForm} from './model';
 
 const maxLiteralLength = 30_000;
-const maxSourceLength = 60_000;
 const tools = [
   {command: 'heading', label: 'Заголовок'},
   {command: 'bold', label: 'Жирный'},
@@ -37,7 +42,8 @@ const tools = [
   {command: 'code', label: 'Код'},
 ] as const;
 
-type DialogRequest = ({kind: 'link'; label: string} | {kind: 'paste'}) & {range: SourceRange};
+type DialogRequest = ({kind: 'link'; label: string} | {kind: 'paste'} |
+  {kind: 'embed'; address?: string; opener?: HTMLElement}) & {range: SourceRange};
 type EditorFrame = DraftFrame & {attachments: AttachmentDraft};
 type EditorDraft = Omit<EditorFrame, 'selection'>;
 type AttachmentRequest = AttachmentDialogRequest & {range: SourceRange; previousSelection: SourceRange};
@@ -57,14 +63,17 @@ function moveToolbarFocus(event: KeyboardEvent<HTMLDivElement>) {
   buttons[next]?.focus();
 }
 
-export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm; pageTo?: string; onAccessEnded?(): void}) {
+export function PageEditor({form, pageTo, pageLinkSearchTo, onAccessEnded, renamedAtRevision, publicLinkActive = form.publicLinkActive}: {
+  form: PageEditorForm; pageTo?: string; pageLinkSearchTo?: string; onAccessEnded?(): void; renamedAtRevision?: string; publicLinkActive?: boolean;
+}) {
   const {action, cancelTo, revision, error, conflict, canSave} = form;
   const [draft, setDraft] = useState<EditorDraft>(() => ({
     source: form.source, contentFormat: form.contentFormat, textBase: form.textBase,
     attachments: {files:form.attachments ?? [], added:form.attachmentAdded ?? [], removed:form.attachmentRemoved ?? []},
   }));
   const [editorMode, setEditorMode] = useState(form.editorMode);
-  const [activeTool, setActiveTool] = useState<EditorCommand | 'source' | 'list-options' | 'link' | 'image'>('heading');
+  const [formatting, setFormatting] = useState<SelectionFormatting>({bold:false, italic:false, strike:false, code:false});
+  const [activeTool, setActiveTool] = useState<EditorCommand | 'source' | 'list-options' | 'link' | 'image' | 'insert'>('heading');
   const [saving, setSaving] = useState(false);
   const [clientError, setClientError] = useState('');
   const [rebase, setRebase] = useState(false);
@@ -101,6 +110,8 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
   });
   const sharedState = shared.state;
   const confirmed = sharedState?.snapshot;
+  const waitingForRename = Boolean(sharedPath && renamedAtRevision &&
+    BigInt(renamedAtRevision) > BigInt(confirmed?.publishedRevision ?? revision));
   const sharedReady = sharedState?.status === 'ready' && sharedState.pending === 0;
   const publishOperation = useMemo(() => newOperationId(), [confirmed?.version, coverDraft, coverChoice, draft.attachments]);
   const publishGuard = form.coeditRetry ?? (confirmed ? {
@@ -123,6 +134,12 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
   const attachments = draft.attachments;
   const changedAttachments = attachments.added.length + attachments.removed.length > 0;
   const textStillUnchanged = draft.textBase && form.textUnchanged && draft.source === form.source && draft.contentFormat === form.contentFormat;
+  const embedNotice = useMemo(() => {
+    if (!canSave || !publicLinkActive || draft.contentFormat !== 'markdown' || !draft.source.includes('sever-embed')) return null;
+    const blocks = parseMarkdown(draft.source, false).blocks;
+    if (blocks.some(block => block.embed?.kind === 'teamstream')) return `${externalPageEmbedHint} ${teamStreamPublicHint}`;
+    return blocks.some(block => block.embed) ? externalPageEmbedHint : null;
+  }, [canSave, publicLinkActive, draft.contentFormat, draft.source]);
 
   function replaceDraft(next: EditorDraft) {
     currentDraft.current = next;
@@ -312,13 +329,11 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
   }
 
   function openLink() {
+    if (readOnly || submitting.current) return;
     const range = selection();
     const label = sourceMode ? draft.source.slice(range.start, range.end) : rich.current?.selectedText() || '';
-    if (!canSave || submitting.current || !label.trim() || range.start === range.end) {
-      restoreSelection(range);
-      return;
-    }
     history.separate();
+    shared.transport.current?.setPaused(true);
     setDialog({kind: 'link', range, label});
   }
 
@@ -328,7 +343,7 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
   }
 
   function applyDialog(value: DialogValue) {
-    if (!dialog || submitting.current || !canSave) return false;
+    if (!dialog || dialog.kind === 'embed' || submitting.current || readOnly) return false;
     const {source, contentFormat} = draft;
     const legacy = contentFormat === 'literal';
     const range = dialog.range;
@@ -338,6 +353,47 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
     if (!applyEdit(change,dialog.kind === 'paste' ? {start:range.end,end:range.end} : range,'atomic')) return false;
     closeDialog({start: change.start, end: change.end});
     return true;
+  }
+
+  function openEmbed(range: SourceRange, address?: string, opener?: HTMLElement) {
+    if (readOnly || submitting.current) return;
+    history.separate();
+    shared.transport.current?.setPaused(true);
+    setDialog({kind: 'embed', range, address, opener});
+  }
+
+  function applyEmbed(address: string) {
+    if (dialog?.kind !== 'embed' || readOnly || submitting.current) return false;
+    const {source, contentFormat} = draft;
+    const legacy = contentFormat === 'literal';
+    if (dialog.address) {
+      const update = updateExternalEmbed(source, legacy, dialog.range, dialog.address, address);
+      if (!update || update.change.source !== source && !applyEdit(update.change, update.before)) return false;
+      closeDialog(update.after);
+      return true;
+    }
+    const result = insertExternalEmbed(source, legacy, dialog.range, address);
+    if (result.source === source || !applyEdit(result, dialog.range)) return false;
+    closeDialog({start: result.start, end: result.end});
+    return true;
+  }
+
+  function removeEmbed(range: SourceRange, address: string) {
+    if (readOnly || submitting.current) return;
+    const update = updateExternalEmbed(draft.source, draft.contentFormat === 'literal', range, address);
+    if (!update) return;
+    history.separate();
+    focusRange.current = update.after;
+    if (!applyEdit(update.change, update.before)) focusRange.current = undefined;
+  }
+
+  function importMarkdown(source: string, expected: Pick<EditorDraft, 'source' | 'contentFormat'>) {
+    const current = currentDraft.current;
+    if (readOnly || submitting.current) return 'blocked';
+    if (current.source !== expected.source || current.contentFormat !== expected.contentFormat) return 'changed';
+    const caret = {start:0, end:0};
+    return record({...current, source, contentFormat:'markdown'}, selection(), caret, 'atomic', current)
+      ? 'applied' : 'blocked';
   }
 
   function chooseCover(selected: CoverView) {
@@ -418,13 +474,13 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
-    if (!canSave || submitting.current || attachmentDialog || placement || mediaReloading || coverConflictPending ||
+    if (!canSave || submitting.current || attachmentDialog || placement || waitingForRename || mediaReloading || coverConflictPending ||
         sharedState && !sharedReady || conflict && !rebase) {
       event.preventDefault();
       return;
     }
     let limitError = '';
-    if (Array.from(draft.source).length > maxSourceLength) {
+    if (Array.from(draft.source).length > maxMarkdownSourceLength) {
       limitError = 'Введите не больше 60 000 символов исходника.';
     } else if (draft.contentFormat === 'literal' && Array.from(decodeLegacyText(draft.source)).length > maxLiteralLength) {
       limitError = 'Введите не больше 30 000 символов.';
@@ -485,12 +541,19 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
         </button>}
       </div>}
       <div className="page-editor-toolbar" role="toolbar" aria-label="Форматирование Markdown"
-        onKeyDown={moveToolbarFocus} onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}>
+        onKeyDown={moveToolbarFocus} onMouseDown={event => {
+          if (event.button === 0 && !(event.target instanceof HTMLInputElement)) event.preventDefault();
+        }}>
+        {!sourceMode && <BlockInsertButton source={draft.source} disabled={readOnly} attachments={supportsAttachments}
+          active={activeTool === 'insert'} onFocus={() => setActiveTool('insert')} selection={selection}
+          onChoose={(command, range) => rich.current?.insertBlock(command, range)} />}
         {tools.map(({command, label}) => {
-          const tool = <button data-markdown-tool="" key={command} type="button" disabled={readOnly}
+          const tool = <button data-markdown-tool="" key={command} type="button" disabled={readOnly} title={label} aria-label={label}
+            aria-pressed={!sourceMode && command !== 'list' && command !== 'heading' ? formatting[command] : undefined}
             tabIndex={canSave && activeTool === command ? 0 : -1}
             onFocus={() => setActiveTool(command)} onClick={() => apply(command)}>
-            {command === 'list' && <Icon name="list" />}{label}
+            {command === 'list' || command === 'code' ? <Icon name={command} /> :
+              <span className={`page-tool-glyph glyph-${command}`} aria-hidden="true">{{heading:'H₂', bold:'B', italic:'I', strike:'S'}[command]}</span>}
           </button>;
           return command === 'list' ? <div key={command} className="page-list-group">
             {tool}
@@ -498,13 +561,15 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
               onFocus={() => setActiveTool('list-options')} onApply={apply} />
           </div> : tool;
         })}
-        <button data-markdown-tool="" type="button" disabled={readOnly} tabIndex={activeTool === 'link' ? 0 : -1}
-          onFocus={() => setActiveTool('link')} onClick={openLink}>Ссылка</button>
+        <button data-markdown-tool="" type="button" disabled={readOnly} aria-haspopup="dialog" tabIndex={activeTool === 'link' ? 0 : -1}
+          title="Ссылка" aria-label="Ссылка" onFocus={() => setActiveTool('link')} onClick={openLink}><Icon name="link" /></button>
         {supportsAttachments && <button data-markdown-tool="" type="button" disabled={readOnly} aria-haspopup="dialog"
+          aria-label="Изображение" title="Изображение"
           tabIndex={activeTool === 'image' ? 0 : -1} onFocus={() => setActiveTool('image')} onClick={() => openAttachment({kind:'image'})}>
-          <Icon name="image" />Изображение
+          <Icon name="image" />
         </button>}
-        <button data-markdown-tool="" className="page-source-toggle" type="button" aria-pressed={sourceMode} aria-controls="page-text"
+        <button data-markdown-tool="" className="page-source-toggle" type="button" aria-label="Исходник" title="Исходник Markdown"
+          aria-pressed={sourceMode} aria-controls="page-text"
           tabIndex={!canSave || activeTool === 'source' ? 0 : -1} disabled={saving}
           onFocus={() => setActiveTool('source')}
           onClick={() => {
@@ -514,7 +579,7 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
             rawBeforeInput.current = undefined;
             setEditorMode(sourceMode ? 'visual' : 'source');
           }}>
-          <Icon name="code" />Исходник
+          <Icon name="code" /><span className="page-source-label">Исходник</span><span className="page-source-short" aria-hidden="true">MD</span>
         </button>
       </div>
       <div className={conflict ? 'page-editor-columns page-editor-columns-conflict' : 'page-editor-columns'}>
@@ -552,8 +617,12 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
           ) : (
             <RichMarkdownEditor ref={rich} id="page-text" source={draft.source} legacy={draft.contentFormat === 'literal'}
               onChange={applyEdit} readOnly={readOnly} describedBy={describedBy} onHistory={stepHistory}
+              onFormattingChange={setFormatting}
               onCompositionChange={active => { richComposing.current=active; updateSharedPause(); }}
               attachments={attachments.files} onInsertAttachmentImage={supportsAttachments ? range => openAttachment({kind:'image'}, range) : undefined}
+              onInsertEmbed={range => openEmbed(range)}
+              onEditEmbed={(block, opener) => { if (block.embed) openEmbed(block, block.embed.url, opener); }}
+              onRemoveEmbed={block => { if (block.embed) removeEmbed(block, block.embed.url); }}
               onPasteMarkdown={range => {
                 history.separate();
                 setDialog({kind: 'paste', range});
@@ -581,6 +650,7 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
         onUpload:() => openAttachment({kind:'upload'}), onInsert:file => openAttachment({kind:'image', select:file.id}),
         onRemove:removeAttachment,
       } : undefined} />}
+      {canSave && <MarkdownFileImport draft={draft} disabled={readOnly} onReplace={importMarkdown} />}
       {cover.requiresChoice && publishedCover && <CoverConflictOptions draft={coverDraft.cover} published={publishedCover}
         choice={coverChoice} disabled={readOnly} onChoice={setCoverChoice} />}
       {conflict && textStillUnchanged && <p className="space-hint">Текст в черновике не менялся. После сохранения останется актуальный текст.</p>}
@@ -612,16 +682,19 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
         onDismissCopy={() => shared.transport.current?.dismissCopy()}
         onMergeInput={text => shared.transport.current?.changeMergeInput(text)}
         onResolve={text => shared.transport.current?.resolve(text)} />}
+      {embedNotice && <p className="space-hint">{embedNotice}</p>}
       <div className="page-editor-actions">
-        <span className="page-editor-status" role="status">{saving ? 'Сохраняем…' : mediaReloading ? 'Обновляем вложения и обложку…' : sharedDraftStatus(sharedState)}</span>
+        <span className="page-editor-status" role="status">{saving ? 'Сохраняем…' : waitingForRename ? 'Обновляем редакцию…' : mediaReloading ? 'Обновляем вложения и обложку…' : sharedDraftStatus(sharedState)}</span>
         {cancelTo && (
-          <a className="space-action space-secondary" href={cancelTo} aria-disabled={saving || undefined}
+          <a className="space-action space-secondary page-editor-return" href={cancelTo} aria-disabled={saving || undefined}
+            aria-label={canSave && !sharedState && !form.coeditRetry ? 'Отменить' : 'Вернуться к чтению'}
+            title={canSave && !sharedState && !form.coeditRetry ? 'Отменить' : 'Вернуться к чтению'}
             onClick={event => { if (submitting.current) event.preventDefault(); }}>
-            {canSave && !sharedState && !form.coeditRetry ? 'Отменить' : 'Вернуться к чтению'}
+            <Icon name="back" /><span>{canSave && !sharedState && !form.coeditRetry ? 'Отменить' : 'Вернуться к чтению'}</span>
           </a>
         )}
         {canSave && (
-          <button className="space-action primary-action" type="submit" disabled={saving || Boolean(placement) || mediaReloading || coverConflictPending ||
+          <button className="space-action primary-action" type="submit" title="Сохранить и опубликовать редакцию" disabled={saving || Boolean(placement) || waitingForRename || mediaReloading || coverConflictPending ||
             Boolean(sharedState && !sharedReady) || Boolean(conflict && !rebase)}>
             {form.coeditRetry ? 'Повторить сохранение' : 'Сохранить'}
           </button>
@@ -632,7 +705,14 @@ export function PageEditor({form, pageTo, onAccessEnded}: {form: PageEditorForm;
     {attachmentDialog && <PageAttachmentDialog request={attachmentDialog} files={attachments.files} uploadTo={form.attachmentUploadTo}
       pendingCount={attachments.added.filter(id => !attachments.files.some(file => file.id === id)).length}
       onComplete={completeAttachment} onDismiss={dismissAttachment} />}
-    {dialog && <DraftDialogs request={dialog} onApply={applyDialog} onCancel={() => {
+    {dialog?.kind === 'embed' && <PageEmbedDialog address={dialog.address} onApply={applyEmbed} onCancel={() => {
+      if (dialog.opener?.isConnected) {
+        setDialog(undefined);
+        dialog.opener.focus({preventScroll:true});
+      } else closeDialog({start:dialog.range.end,end:dialog.range.end});
+    }} />}
+    {dialog && dialog.kind !== 'embed' && <DraftDialogs request={dialog} pageLinkSearchTo={pageLinkSearchTo}
+      onApply={applyDialog} onCancel={() => {
       const range = dialog.range;
       closeDialog(dialog.kind === 'paste' ? {start: range.end, end: range.end} : range);
     }} />}

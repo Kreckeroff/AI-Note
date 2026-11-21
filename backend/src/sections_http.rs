@@ -3,6 +3,7 @@ mod cover;
 mod editor;
 mod history;
 mod pages;
+mod rename;
 
 pub(crate) use attachments::{
     unauthenticated as attachment_unauthenticated, unavailable as attachment_unavailable,
@@ -29,8 +30,8 @@ use crate::{
         CreateSection, Page, PageAddress, Principal, Section, SectionTree, Space, Store, Tenant,
         TenantSpaces,
     },
-    http::{self, html, plain, redirect},
-    sections::{NameForm, PageEditorForm, PageReading, SectionScreen},
+    http::{self, html, html_with_external_frames, plain, redirect},
+    sections::{NameForm, PageEditorForm, PageReading, SectionScreen, with_parent},
     views,
     workspace::{
         CatalogOptions, DocumentsRoute, DocumentsTarget, WorkspaceContext, canonical_uuid,
@@ -52,6 +53,9 @@ struct DocumentNavigation {
     route: DocumentsRoute,
     options: CatalogOptions,
     from: Option<Uuid>,
+    parent: Result<Option<Uuid>, ()>,
+    download_markdown: bool,
+    teamstream: Option<crate::teamstream::IsolatedOrigin>,
 }
 
 impl DocumentNavigation {
@@ -61,6 +65,10 @@ impl DocumentNavigation {
             route,
             options: CatalogOptions::parse(query),
             from: section_origin(query),
+            parent: requested_parent(query),
+            download_markdown: matches!(route.target, DocumentsTarget::Page(_))
+                && http::Form::from_query(query).field("download") == Ok(Some("markdown")),
+            teamstream: request.extensions().get().cloned(),
         }
     }
 
@@ -90,20 +98,40 @@ impl DocumentNavigation {
         failure: Option<Failure>,
     ) -> NameForm {
         let DocumentsRoute { tenant, space, .. } = self.route;
-        let action = section_form_path(&sections_path(tenant, space), from, &self.options);
+        let parent = self.parent.unwrap_or_default();
+        let action = with_parent(
+            &section_form_path(&sections_path(tenant, space), from, &self.options),
+            parent,
+        );
         let cancel_to = format!("{}#create-section", self.destination(from));
         NameForm {
+            template: None,
             operation_id,
             title: title.to_owned(),
             error: failure.map_or("", |failure| failure.message).to_owned(),
             invalid_name: failure.is_some_and(|failure| failure.invalid_name),
             cancel_to,
             action,
-            retry_to: failure
-                .filter(|failure| failure.new_form)
-                .map(|_| new_section_path(tenant, space, from, &self.options)),
+            retry_to: failure.filter(|failure| failure.new_form).map(|_| {
+                with_parent(
+                    &new_section_path(tenant, space, from, &self.options),
+                    parent,
+                )
+            }),
         }
     }
+}
+
+fn requested_parent(query: &str) -> Result<Option<Uuid>, ()> {
+    let mut values = url::form_urlencoded::parse(query.as_bytes())
+        .filter_map(|(key, value)| (key == "parent").then_some(value));
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(());
+    }
+    canonical_uuid(&value).map(Some).ok_or(())
 }
 
 struct DocumentsPage {
@@ -167,6 +195,7 @@ impl DocumentsPage {
 
     fn page_only(address: &PageAddress, principal: &Principal, mut page: Page) -> Self {
         page.section_id = Uuid::nil();
+        page.parent_id = None;
         let tenant = Tenant {
             id: address.tenant,
             name: String::new(),
@@ -195,6 +224,7 @@ impl DocumentsPage {
             can_create: false,
             sections: vec![Section {
                 id: Uuid::nil(),
+                parent_id: None,
                 title: String::new(),
             }],
             pages: vec![page],
@@ -212,6 +242,7 @@ impl DocumentsPage {
         status: StatusCode,
         selected: Selection,
         dialog: Option<CreationDialog>,
+        teamstream: Option<&crate::teamstream::IsolatedOrigin>,
     ) -> Response {
         let (form, page_form) = match dialog {
             Some(CreationDialog::Section(form)) => (Some(form), None),
@@ -232,10 +263,12 @@ impl DocumentsPage {
             reading: selected.reading,
             editor: selected.editor,
         };
-        html(
-            status,
-            views::closed_space(&self.context, &self.space, &tree),
-        )
+        let content = views::closed_space(&self.context, &self.space, &tree);
+        if tree.reading.is_some() || tree.editor.is_some() {
+            html_with_external_frames(status, content, teamstream)
+        } else {
+            html(status, content)
+        }
     }
 }
 
@@ -255,6 +288,16 @@ pub(crate) async fn handle(
     request: Request,
 ) -> Result<Response, sqlx::Error> {
     let nav = DocumentNavigation::for_request(route, &request);
+    if matches!(
+        route.target,
+        DocumentsTarget::Sections
+            | DocumentsTarget::NewSection
+            | DocumentsTarget::Pages(_)
+            | DocumentsTarget::NewPage(_)
+    ) && nav.parent.is_err()
+    {
+        return Ok(not_found(route.target));
+    }
     match route.target {
         DocumentsTarget::Sections => {
             return Ok(submit(store, &nav, principal, origin, request).await);
@@ -264,6 +307,17 @@ pub(crate) async fn handle(
         }
         DocumentsTarget::EditPage(id) if request.method() == Method::POST => {
             return Ok(editor::submit(store, &nav, id, principal, origin, request).await);
+        }
+        DocumentsTarget::RenamePage(id) => {
+            let response = rename::handle(store, &nav.page_address(id, principal), origin, request).await?;
+            let outcome = match response.status() {
+                StatusCode::OK => "accepted",
+                StatusCode::CONFLICT => "conflict",
+                StatusCode::NOT_FOUND => "not-found",
+                _ => "rejected",
+            };
+            record(principal.id, route, outcome);
+            return Ok(response);
         }
         DocumentsTarget::UploadCover(page) => {
             return cover::upload(store, &nav.page_address(page, principal), origin, request).await;
@@ -305,7 +359,7 @@ pub(crate) async fn handle(
     }
     if let DocumentsTarget::Page(id) | DocumentsTarget::EditPage(id) = route.target {
         return match load_page(store, &nav, principal, id).await? {
-            Some(page) => editor::open(store, &nav, id, principal, page).await,
+            Some(page) => editor::open(store, &nav, id, principal, page, origin).await,
             None => denied_page(store, &nav.page_address(id, principal)).await,
         };
     }
@@ -315,12 +369,12 @@ pub(crate) async fn handle(
     };
 
     let response = match route.target {
-        DocumentsTarget::Space => match page.tree.pages.first() {
+        DocumentsTarget::Space => match page.tree.first_page() {
             Some(first) => redirect(&with_options(
                 &page_path(route.tenant, route.space, first.id),
                 &nav.options,
             )),
-            None => page.render(StatusCode::OK, Selection::default(), None),
+            None => page.render(StatusCode::OK, Selection::default(), None, None),
         },
         DocumentsTarget::Section(id) => match page.section(Some(id)) {
             Some(section) => page.render(
@@ -329,6 +383,7 @@ pub(crate) async fn handle(
                     section: Some(section),
                     ..Selection::default()
                 },
+                None,
                 None,
             ),
             None => {
@@ -341,7 +396,11 @@ pub(crate) async fn handle(
             return Ok(plain(StatusCode::FORBIDDEN, DENIED));
         }
         DocumentsTarget::NewSection => {
-            let selected = page.section(nav.from);
+            let parent = nav.parent.ok().flatten();
+            if parent.is_some() && page.section(parent).is_none() {
+                return Ok(not_found(route.target));
+            }
+            let selected = page.section(parent.or(nav.from));
             let form = nav.form(
                 selected.as_ref().map(|section| section.id),
                 Uuid::new_v4(),
@@ -355,6 +414,7 @@ pub(crate) async fn handle(
                     ..Selection::default()
                 },
                 Some(CreationDialog::Section(form)),
+                None,
             )
         }
         DocumentsTarget::NewPage(section_id) => {
@@ -366,19 +426,45 @@ pub(crate) async fn handle(
                 record(principal.id, route, "forbidden");
                 return Ok(plain(StatusCode::FORBIDDEN, pages::DENIED));
             }
-            let form = pages::creation_form(&nav, section.id, Uuid::new_v4(), "", None);
+            let parent = nav.parent.ok().flatten();
+            let selected_page = match parent {
+                Some(parent) => {
+                    let Some(parent_page) = page
+                        .tree
+                        .pages
+                        .iter()
+                        .find(|item| item.id == parent && item.section_id == section.id)
+                        .cloned()
+                    else {
+                        return Ok(not_found(route.target));
+                    };
+                    if !store
+                        .page_permissions(&nav.page_address(parent, principal))
+                        .await?
+                        .is_some_and(|access| access.can_edit)
+                    {
+                        return Ok(plain(StatusCode::FORBIDDEN, pages::DENIED));
+                    }
+                    Some(parent_page)
+                }
+                None => None,
+            };
+            let form = pages::creation_form(&nav, section.id, Uuid::new_v4(), "", &crate::page_templates::EMPTY, None);
             page.render(
                 StatusCode::OK,
                 Selection {
                     section: Some(section),
+                    page: selected_page,
                     ..Selection::default()
                 },
                 Some(CreationDialog::Page(form)),
+                None,
             )
         }
         DocumentsTarget::Sections
         | DocumentsTarget::Page(_)
         | DocumentsTarget::EditPage(_)
+        | DocumentsTarget::RenamePage(_)
         | DocumentsTarget::Pages(_)
         | DocumentsTarget::UploadCover(_)
         | DocumentsTarget::CoverImage { .. }
@@ -493,7 +579,14 @@ async fn submit(
     let failure = match operation {
         Some(id) => match timeout(
             SAVE_TIMEOUT,
-            store.create_section(route.tenant, route.space, principal.id, id, title),
+            store.create_section_under(
+                route.tenant,
+                route.space,
+                principal.id,
+                id,
+                title,
+                nav.parent.ok().flatten(),
+            ),
         )
         .await
         {
@@ -511,7 +604,11 @@ async fn submit(
             }
             Ok(Ok(CreateSection::Duplicate)) => Failure {
                 status: StatusCode::CONFLICT,
-                message: "На верхнем уровне уже есть раздел с таким названием.",
+                message: if nav.parent.ok().flatten().is_some() {
+                    "У родительского раздела уже есть подраздел с таким названием."
+                } else {
+                    "На верхнем уровне уже есть раздел с таким названием."
+                },
                 invalid_name: true,
                 new_form: false,
             },
@@ -525,6 +622,12 @@ async fn submit(
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: "Введите название раздела.",
                 invalid_name: true,
+                new_form: false,
+            },
+            Ok(Ok(CreateSection::TooDeep)) => Failure {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                message: "Достигнута максимальная вложенность. Выберите уровень выше.",
+                invalid_name: false,
                 new_form: false,
             },
             Ok(Ok(CreateSection::LongName)) => Failure {
@@ -551,7 +654,7 @@ async fn submit(
     record(principal.id, route, failure.status.as_str());
     match timeout(RECOVERY_TIMEOUT, load(store, nav, principal)).await {
         Ok(Ok(Some(page))) if page.tree.can_create => {
-            let selected = page.section(nav.from);
+            let selected = page.section(nav.parent.ok().flatten().or(nav.from));
             let form = nav.form(
                 selected.as_ref().map(|section| section.id),
                 operation,
@@ -565,6 +668,7 @@ async fn submit(
                     ..Selection::default()
                 },
                 Some(CreationDialog::Section(form)),
+                None,
             )
         }
         Ok(Ok(Some(_))) => plain(StatusCode::FORBIDDEN, DENIED),
@@ -589,6 +693,7 @@ fn not_found(target: DocumentsTarget) -> Response {
         DocumentsTarget::Space => views::space_not_found(),
         DocumentsTarget::Page(_)
         | DocumentsTarget::EditPage(_)
+        | DocumentsTarget::RenamePage(_)
         | DocumentsTarget::UploadCover(_)
         | DocumentsTarget::CoverImage { .. }
         | DocumentsTarget::Attachment { .. }
@@ -604,6 +709,7 @@ fn record(account: Uuid, route: DocumentsRoute, outcome: &str) {
         DocumentsTarget::Sections => "section.create",
         DocumentsTarget::Pages(_) => "page.create",
         DocumentsTarget::EditPage(_) => "page.edit",
+        DocumentsTarget::RenamePage(_) => "page.rename",
         DocumentsTarget::Page(_) | DocumentsTarget::NewPage(_) => "page.open",
         DocumentsTarget::History { .. } => "page.history",
         _ => "section.open",

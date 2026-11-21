@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Север · Пространства и доступ</title>
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="space-access.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-title">К содержимому</a>
+  <aside class="review" aria-label="Роли в макете">
+    <span class="review-label">Макет для согласования</span>
+    <div class="personas" aria-label="Посмотреть от лица">
+      <button type="button" class="btn" data-actor="admin" aria-pressed="true">Администратор</button>
+      <button type="button" class="btn" data-actor="creator" aria-pressed="false">Мария · создатель</button>
+      <button type="button" class="btn" data-actor="member" aria-pressed="false">Алексей · участник</button>
+    </div>
+  </aside>
+  <header class="app-header">
+    <div class="org-mark"><span class="brand-mark" data-icon="north"></span><strong>Север</strong><span class="header-divider"></span><span>Студия «Контур»</span></div>
+    <div class="account"><span class="avatar" aria-hidden="true" id="account-avatar"></span><span id="account-name"></span></div>
+  </header>
+  <main class="frame">
+    <nav class="page-nav" id="admin-nav" aria-label="Настройки организации">
+      <button type="button" data-page="access" class="btn" aria-pressed="true"><span data-icon="shield"></span>Доступ к пространствам</button>
+      <button type="button" data-page="creation" class="btn" aria-pressed="false"><span data-icon="key"></span>Право создания</button>
+    </nav>
+    <div id="view"></div>
+  </main>
+  <dialog id="panel" aria-labelledby="dialog-title"></dialog>
+  <p id="review-status" class="sr-only" role="status"></p>
+  <script type="module" src="space-access.mjs"></script>
+</body>
+</html>

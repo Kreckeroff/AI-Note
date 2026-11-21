@@ -1,4 +1,8 @@
-use axum::{extract::Request, http::StatusCode, response::Response};
+use axum::{
+    extract::Request,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+};
 use sha2::{Digest, Sha256};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -11,14 +15,16 @@ use crate::{
     db::{
         Attachment, AttachmentPatch, CoeditPublication, CoverUpdate, PageAddress,
         PageContentFormat, PageCover, PageUpdate, Principal, SavePageText, Store,
+        document_finding::BacklinkCandidate, tasks::TaskStatus,
     },
-    http::{self, Form, FormError, html, plain, redirect},
+    http::{self, Form, FormError, html, html_with_external_frames, plain, redirect},
     identity::session_digest,
-    markdown::{render_markdown, render_markdown_with_attachments},
+    markdown::render_document,
     sections::{
         CoeditRetry, CoverView, PageAttachmentView, PageEditConflict, PageEditorForm,
-        PageEditorMode, PageReading,
+        PageEditorMode, PageReading, RelatedDocument,
     },
+    tasks_http::task_path,
     text::{markdown_to_text, normalize_line_endings, text_to_markdown},
     views,
     workspace::{
@@ -311,6 +317,7 @@ impl Submission {
                 .map(|draft| attachment_draft_path(route.tenant, route.space, page, draft)),
             attachment_added,
             attachment_removed,
+            public_link_active: None,
             coedit_retry: None,
         }
     }
@@ -406,6 +413,7 @@ pub(super) async fn open(
     id: Uuid,
     principal: &Principal,
     page: DocumentsPage,
+    origin: &str,
 ) -> Result<Response, sqlx::Error> {
     let route = nav.route;
     let Some(mut selected) = page.select_page(id) else {
@@ -417,6 +425,10 @@ pub(super) async fn open(
         record(principal.id, route, "not-found");
         return super::denied_page(store, &address).await;
     };
+    if nav.download_markdown {
+        record(principal.id, route, "exported");
+        return Ok(markdown_response(&current.title, current.source));
+    }
     let page =
         page.with_visible_context(&address, principal, &mut selected, current.can_browse_space);
     selected.can_share = current.can_manage;
@@ -461,28 +473,48 @@ pub(super) async fn open(
             attachment_upload_to: Some(attachment_draft_path(route.tenant, route.space, id, draft)),
             attachment_added: Vec::new(),
             attachment_removed: Vec::new(),
+            public_link_active: Some(current.public_link_active),
             coedit_retry: None,
         });
     } else {
         let (text, rendered_html) = match current.format {
             PageContentFormat::Literal => (markdown_to_text(&current.source), None),
             PageContentFormat::Markdown => {
-                let rendered = if files.is_empty() {
-                    render_markdown(&current.source)
-                } else {
-                    render_markdown_with_attachments(&current.source, &|id, inline| {
+                let rendered = render_document(
+                    &current.source,
+                    &|id, inline| {
                         let file = files.iter().find(|file| file.id == id)?;
                         if inline {
                             file.image_to.as_deref()
                         } else {
                             file.download_to.as_deref()
                         }
-                    })
-                };
+                    },
+                    origin,
+                );
                 (current.source, Some(rendered))
             }
         };
+        let mut related = if page.page_only {
+            Vec::new()
+        } else {
+            related_documents(&address, origin, store.backlink_candidates(&address).await?)
+        };
+        if !page.page_only {
+            for (task, number, title, status) in store.tasks_related_to_document(&address).await? {
+                let Some(status) = TaskStatus::parse(&status) else {
+                    continue;
+                };
+                related.push(RelatedDocument {
+                    title,
+                    path: task_path(route.tenant, route.space, task),
+                    task_label: Some(format!("KB-{number:03} · {}", status.label())),
+                });
+            }
+        }
         selected.reading = Some(PageReading {
+            template: current.template_revision.as_deref().and_then(crate::page_templates::find),
+            related,
             revision: current.content_revision.to_string(),
             text,
             rendered_html,
@@ -495,7 +527,58 @@ pub(super) async fn open(
         });
     }
     record(principal.id, route, "opened");
-    Ok(page.render(StatusCode::OK, selected, None))
+    Ok(page.render(StatusCode::OK, selected, None, nav.teamstream.as_ref()))
+}
+
+fn markdown_response(title: &str, source: String) -> Response {
+    let sanitized = title.replace(
+        |c: char| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'),
+        "_",
+    );
+    let stem = sanitized.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let stem = if stem.is_empty() {
+        "Страница"
+    } else {
+        stem
+    };
+    // Keep the extension even on file systems with a 255-byte filename limit.
+    let end = stem.floor_char_boundary(240.min(stem.len()));
+    let name = format!("{}.md", &stem[..end]);
+    (
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                http::content_disposition(&name, false).as_str(),
+            ),
+        ],
+        source,
+    )
+        .into_response()
+}
+
+fn related_documents(
+    current: &PageAddress,
+    origin: &str,
+    candidates: Vec<BacklinkCandidate>,
+) -> Vec<RelatedDocument> {
+    let target = page_path(current.tenant, current.space, current.page);
+    let relative = format!(r#"href="{target}""#);
+    let absolute = format!(r#"href="{origin}{target}""#);
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            // Apply the same grammar as the reader, including code and escaped HTML.
+            let rendered = render_document(&candidate.markdown, &|_, _| None, origin);
+            rendered.as_str().contains(&relative) || rendered.as_str().contains(&absolute)
+        })
+        .take(20)
+        .map(|candidate| RelatedDocument {
+            path: page_path(current.tenant, candidate.space_id, candidate.id),
+            title: candidate.title,
+            task_label: None,
+        })
+        .collect()
 }
 
 enum SaveFailure {
@@ -730,9 +813,10 @@ async fn render_failure(
     let files = attachment_projection(route, id, changes, files, staged);
     let mut form = input.editor_form(nav, id, Some(return_to(nav, id)), error, conflict, can_save);
     form.attachments = files;
+    form.public_link_active = can_save.then_some(current.public_link_active);
     selected.editor = Some(form);
     record(principal.id, route, status.as_str());
-    page.render(status, selected, None)
+    page.render(status, selected, None, nav.teamstream.as_ref())
 }
 
 fn unavailable_draft(nav: &DocumentNavigation, id: Uuid, input: Submission) -> Response {
@@ -833,15 +917,78 @@ fn retry_with_attachments(
     let mut form = input.editor_form(nav, id, None, error, None, true);
     form.attachments = files;
     form.coedit_retry = permit;
-    html(
+    html_with_external_frames(
         StatusCode::SERVICE_UNAVAILABLE,
         views::page_edit_retry(&form),
+        nav.teamstream.as_ref(),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn markdown_file_preserves_source_and_encodes_a_single_download_name() {
+        let source = "# Заметка\r\n\n+ **Ввод** и <foo>  \n".to_owned();
+        let response = markdown_response("../🧭/план\r\n", source.clone());
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/markdown; charset=utf-8"
+        );
+        let disposition = response.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap();
+        assert!(disposition.starts_with("attachment;"));
+        assert!(
+            disposition.ends_with(".md")
+                && !disposition.contains('/')
+                && !disposition.contains("%0D")
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), source.as_bytes());
+    }
+
+    #[test]
+    fn related_documents_accept_live_local_links_and_ignore_code() {
+        let address = PageAddress {
+            tenant: Uuid::new_v4(),
+            space: Uuid::new_v4(),
+            page: Uuid::new_v4(),
+            account: Uuid::new_v4(),
+        };
+        let origin = "http://localhost:4125";
+        let path = page_path(address.tenant, address.space, address.page);
+        let candidate = |title: &str, markdown| BacklinkCandidate {
+            id: Uuid::new_v4(),
+            space_id: Uuid::new_v4(),
+            title: title.into(),
+            markdown,
+        };
+        let relative = candidate("Относительная", format!("[Исходник]({path})"));
+        let relative_path = page_path(address.tenant, relative.space_id, relative.id);
+        let links = related_documents(
+            &address,
+            origin,
+            vec![
+                candidate("Код", format!("`[Исходник]({path})`")),
+                candidate("Блок кода", format!("```md\n[Исходник]({path})\n```")),
+                candidate("HTML", format!(r#"<a href="{path}">Исходник</a>"#)),
+                candidate(
+                    "Внешняя",
+                    format!("[Исходник](https://remote.example{path})"),
+                ),
+                relative,
+                candidate("Абсолютная", format!("[Исходник]({origin}{path})")),
+            ],
+        );
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].title, "Относительная");
+        assert_eq!(links[0].path, relative_path);
+        assert_eq!(links[1].title, "Абсолютная");
+    }
 
     #[test]
     fn coedit_form_preserves_complete_exact_permit_and_rejects_partial_inputs() {

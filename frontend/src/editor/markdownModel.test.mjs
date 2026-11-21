@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {httpDestination, isProtected, parseMarkdown} from './markdownModel.ts';
+import {externalEmbedAddress, httpDestination, isProtected, parseMarkdown, selectionFormatting} from './markdownModel.ts';
 
 const fixtures = JSON.parse(readFileSync(
   new URL('../../../backend/src/markdown-extended-fixtures.json', import.meta.url),
   'utf8',
 ));
+
+test('toolbar reports all, some or none of the selected text carrying each mark', () => {
+  const source = '**жирный** и *курсив*';
+  const model = parseMarkdown(source,false);
+  assert.deepEqual(selectionFormatting(model,{start:2,end:4}),{bold:true,italic:false,strike:false,code:false});
+  assert.deepEqual(selectionFormatting(model,{start:3,end:source.length-1}),{bold:'mixed',italic:'mixed',strike:false,code:false});
+  assert.equal(selectionFormatting(model,{start:3,end:3}).bold,true);
+});
 
 for (const {name, source, kinds, runs, href} of fixtures) {
   test(name, () => {
@@ -68,4 +76,53 @@ test('absolute link destination requires a supported scheme and a host', () => {
   assert.equal(httpDestination('/page'), null);
   assert.equal(httpDestination('mailto:user@example.test'), null);
   assert.equal(httpDestination('https://example.test/a b'), null);
+});
+
+test('external embed addresses preserve URL components and reject ambiguous or local destinations', () => {
+  assert.deepEqual(externalEmbedAddress(' HTTPS://Video.example.test:443/embed?a=1&b=2#t=1\t', 'sever.test'), {
+    host: 'video.example.test', url: 'https://video.example.test/embed?a=1&b=2#t=1',
+  });
+  for (const value of [
+    'http://video.example.test', 'https:///video.example.test', '//video.example.test',
+    'https://a:b@video.example.test', 'https://@video.example.test', 'https://video.example.test/a\\b',
+    'https://video.example.test/a\nb', 'https://video.example.test/a b', 'https://Sever.test.:4125/page', 'https://sever.test../page',
+  ]) assert.equal(externalEmbedAddress(value, 'sever.test'), undefined, value);
+});
+
+test('only a closed single-line sever-embed fence becomes an atomic block', () => {
+  const url = 'https://video.example.test/watch';
+  const valid = `~~~ sever-embed\t\n${url}\n~~~`;
+  const model = parseMarkdown(valid, false);
+  assert.equal(model.blocks[0].embed.url, url);
+  assert.ok(isProtected(model, {start:valid.indexOf(url),end:valid.indexOf(url)}));
+  assert.equal(model.blocks.at(-1).runs[0].offsets[0], valid.length);
+  assert.ok(!isProtected(model, {start:valid.length,end:valid.length}));
+  for (const value of [valid.replace('sever-embed','markdown'), valid.replace(url,url+'\n'+url), valid.slice(0,-3)]) {
+    const [block] = parseMarkdown(value, false).blocks;
+    assert.equal(block.kind,'fence');
+    assert.equal(block.embed,undefined);
+    assert.equal(block.runs[0].text.includes(url),true);
+  }
+  assert.ok(!parseMarkdown(valid,true).blocks.some(block=>block.embed));
+});
+
+test('only the official TeamStream player enables the specialized video block', () => {
+  const host = 'https://workspace.teamstream.mws.ru';
+  const id = 'a1b2c3d4-0000-4000-8000-000000000001';
+  const player = host + '/embed/' + id;
+  for (const value of [player, player + '?t=0', player + '?t=00030', player + '?t=4294967295']) {
+    assert.equal(externalEmbedAddress(value)?.kind, 'teamstream', value);
+    assert.equal(externalEmbedAddress(value)?.url, value);
+  }
+  assert.equal(externalEmbedAddress(host + '/embed/' + id.toUpperCase())?.kind, 'teamstream');
+  for (const value of [
+    player + '?', player + '#', player + '#clip', player + '/',
+    player + '?t=1&t=2', player + '?t=-1', player + '?t=1.5', player + '?%74=1',
+    player + '?t=%31', player + '?t=4294967296', player + '?t=1&next=%2F',
+    host + '/watch/' + id, host + '/EMBED/' + id, host + ':444/embed/' + id, host + './embed/' + id,
+    'https://workspace.teamstream.mws.ru.example.test/embed/' + id,
+  ]) assert.notEqual(externalEmbedAddress(value)?.kind, 'teamstream', value);
+  const [block] = parseMarkdown('~~~ sever-embed\n' + player + '?t=30\n~~~').blocks;
+  assert.equal(block.embed?.kind, 'teamstream');
+  assert.equal(block.embed?.url, player + '?t=30');
 });

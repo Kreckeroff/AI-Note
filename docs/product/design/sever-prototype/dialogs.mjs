@@ -1,7 +1,8 @@
-import {accessFor, accountIds, availableSpaces, coverFor, coverStyles, documentById, invitesEnabled, isCoverImage, ownsSpace, profileFor, roles, spaceInfo, taskAssignees, taskStatuses} from './model.mjs';
+import {accessFor, accountIds, availableTenants, availableTenantSpaces, coverFor, coverStyles, documentById, invitesEnabled, isCoverImage, ownsSpace, profileFor, roles,
+  spaceInfo, taskAssignees, taskStatuses, tenantIdForSpace, tenantNameFor} from './model.mjs?v=tenant-catalog-2';
 import {visibleTasks} from './board.mjs';
 import {agentSnapshot} from './approach.mjs';
-import {coverArt} from './documents.mjs';
+import {coverArt} from './documents.mjs?v=tenant-catalog-2';
 import {coverImage, rasterAccept} from './media.mjs';
 import {avatar, button, entity, escapeHtml as html, icon, selectOptions} from './ui.mjs';
 
@@ -91,8 +92,10 @@ function themeSetting(data) {
   return adjust('Тема','Применяется к документам, графу и задачам.',`<select class="field" data-control="theme">${selectOptions({dark:'Тёмная',light:'Светлая'},data.theme)}</select>`);
 }
 
-function account(data) {
+function account(data,fixedProfile) {
   const person = profileFor(data,data.account);
+  const banner = person ? `<div class="settings-banner">${avatar(person)}<div><strong>${html(person.name)}</strong><p>${html(person.email)}</p></div></div>` : '';
+  if (fixedProfile && person) return banner + `<section class="settings-section"><h3>Интерфейс</h3>${themeSetting(data)}</section>`;
   const profiles = accountIds(data).filter(key => key !== 'analyst' && key !== data.account).map(key => {
     const person = profileFor(data,key);
     return (
@@ -106,7 +109,7 @@ function account(data) {
       profile.providers.google && entity('choose-account',id,'key','Войти через Google',profile.name,'document'),
     ].filter(Boolean).join('');
   }).join('') : '';
-  return `${person ? `<div class="settings-banner">${avatar(person)}<div><strong>${html(person.name)}</strong><p>${html(person.email)}</p></div></div>
+  return `${person ? `${banner}
     <section class="settings-section"><h3>Профиль</h3><form data-form="profile-details">
       <label class="dialog-field"><span>Отображаемое имя</span><input required maxlength="48" name="name" class="field" value="${html(person.name)}"></label>
       <label class="dialog-field"><span>Почта</span><input type="email" required maxlength="120" name="email" class="field" value="${html(person.email)}"></label>
@@ -152,17 +155,35 @@ function coverMenu(current) {
   </button>`).join('')}</div>`;
 }
 
-function spaces(data) {
-  const ids = availableSpaces(data);
+export function spaceSwitcherItems(data,query = '') {
+  const phrase = query.trim().toLocaleLowerCase('ru');
+  const owner = space => profileFor(data,space.owner)?.name || '';
+  let ids = availableTenantSpaces(data);
+  if (data.tenantDemo) {
+    ids = ids.filter(id => spaceInfo(data,id).name.toLocaleLowerCase('ru').includes(phrase)).sort((a,b) => {
+      const left = spaceInfo(data,a), right = spaceInfo(data,b);
+      return left.name.localeCompare(right.name,'ru') || owner(left).localeCompare(owner(right),'ru');
+    });
+    if (phrase && !ids.length) return '<p class="small muted" role="status">Совпадений нет.</p>';
+  }
   const owned = ids.filter(id => ownsSpace(data,id));
   const joined = ids.filter(id => !ownsSpace(data,id));
-  const group = (ids,title) => `<section class="switcher-group"><h3>${title}</h3>${ids.map(id => {
-    const space = spaceInfo(data,id);
-    return entity('choose-space',id,space.glyph,space.name,id === data.space ? 'Текущее пространство' : space.description);
-  }).join('') || '<p class="small muted">Пока нет пространств.</p>'}</section>`;
-  return group(owned,'Мои пространства')+group(joined,'Доступные пространства')+
-    `<div class="dialog-buttons">${button('create-space','Создать пространство','plus',{className:'primary'})}</div>
-    <div class="dialog-buttons mobile-tools">${button('settings','Настройки','settings',{className:'ghost'})}${button('account','Профиль','user',{className:'ghost'})}</div>`;
+  const group = (ids,title) => {
+    const visible = data.tenantDemo && !phrase ? ids.filter((id,index) => index < 4 || id === data.space) : ids;
+    const rows = visible.map(id => {
+      const space = spaceInfo(data,id);
+      const detail = data.tenantDemo ? owner(space) : space.description;
+      const description = id === data.space ? ['Текущее пространство',data.tenantDemo && detail].filter(Boolean).join(' · ') : detail;
+      return entity('choose-space',id,space.glyph,space.name,description);
+    }).join('');
+    return `<section class="switcher-group"><h3>${title}</h3>${rows || '<p class="small muted">Пока нет пространств.</p>'}</section>`;
+  };
+  return group(owned,'Мои пространства')+group(joined,'Доступные пространства');
+}
+
+function tenants(data) {
+  const current = tenantIdForSpace(data);
+  return availableTenants(data).map(id => entity('choose-tenant',id,'north',tenantNameFor(data,id),id === current ? 'Текущая среда' : '')).join('');
 }
 
 function createItem(data,doc,modal) {
@@ -207,8 +228,11 @@ export function dialogContent(data,doc,modal) {
     case 'search': return {title:'Поиск в пространстве', body:`<div class="search-field-wrap">${icon('search')}<input class="field" data-search type="search" placeholder="Страница, раздел или задача…" aria-label="Поиск" autofocus></div><div class="search-results" data-results>${searchResults(data,modal.query || '')}</div>`};
     case 'share': return {title:'Управление доступом',body:share(data,doc)};
     case 'settings': return {title:'Настройки пространства',body:settings(data)};
-    case 'account': return {title:data.account ? 'Учётная запись' : 'Вход в «Север»',body:account(data)};
-    case 'spaces': return {title:'Рабочие пространства',body:spaces(data)};
+    case 'account': return {title:data.account ? 'Учётная запись' : 'Вход в «Север»',body:account(data,modal.fixedProfile)};
+    case 'tenants': return {title:'Выбрать среду',body:tenants(data)};
+    case 'spaces': return {title:'Рабочие пространства',body:data.tenantDemo
+      ? `<div class="search-field-wrap">${icon('search')}<input class="field" type="search" data-space-search placeholder="Найти пространство" aria-label="Поиск по названию пространства" value="${html(modal.query || '')}" autofocus></div><div class="search-results" data-space-results>${spaceSwitcherItems(data,modal.query)}</div>`
+      : spaceSwitcherItems(data)};
     case 'signup': return {title:'Создать профиль',body:`<p class="small muted">Создайте локальный профиль и личное пространство.</p>
       <form data-form="signup">${formName('Имя и фамилия','name','Алексей Иванов','autofocus')}
         <label class="dialog-field"><span>Почта</span><input class="field" type="email" required maxlength="120" name="email" placeholder="name@example.com"></label>
@@ -216,6 +240,7 @@ export function dialogContent(data,doc,modal) {
         <p class="form-status" data-signup-error hidden></p>${save('Создать профиль','plus')}
       </form>`};
     case 'new-space': return {title:'Новое пространство',body:`<form data-form="new-space">${formName('Название','name','Например, «Команда продукта»','autofocus')}
+      ${data.tenantDemo ? '<p class="form-status" data-space-name-error role="alert" hidden></p>' : ''}
       <label class="dialog-field"><span>Описание</span><textarea class="field" name="description" rows="2" maxlength="150"></textarea></label>
       ${save('Создать пространство','plus')}</form>`};
     case 'video': return {title:'Вставить видео',body:`<p class="small muted">Поддерживаются YouTube, Vimeo и прямые HTTPS-ссылки на MP4 или WebM.</p>

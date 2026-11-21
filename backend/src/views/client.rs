@@ -164,6 +164,7 @@ struct CatalogData<'a> {
 struct WorkspaceData<'a> {
     tenant: CurrentTenant<'a>,
     tenants: Vec<TenantLink<'a>>,
+    account_id: Uuid,
     account_name: &'a str,
     available_spaces: Vec<SpaceData<'a>>,
     catalog: CatalogData<'a>,
@@ -181,6 +182,7 @@ fn serialize_workspace<S: Serializer>(
             can_create: workspace.tenant.can_create,
         },
         tenants: workspace.tenants.iter().map(TenantLink::from).collect(),
+        account_id: workspace.account_id,
         account_name: &workspace.account_name,
         available_spaces: workspace
             .available_spaces
@@ -215,8 +217,10 @@ fn serialize_space<S: Serializer>(space: &Space, serializer: S) -> Result<S::Ok,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SectionData<'a> {
     id: Uuid,
+    parent_id: Option<Uuid>,
     title: &'a str,
 }
 
@@ -224,6 +228,7 @@ impl<'a> From<&'a Section> for SectionData<'a> {
     fn from(section: &'a Section) -> Self {
         Self {
             id: section.id,
+            parent_id: section.parent_id,
             title: &section.title,
         }
     }
@@ -232,6 +237,10 @@ impl<'a> From<&'a Section> for SectionData<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NameFormData<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    templates: Option<&'static [crate::page_templates::PageTemplate]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_template: Option<&'static str>,
     operation_id: Uuid,
     title: &'a str,
     error: &'a str,
@@ -244,6 +253,8 @@ struct NameFormData<'a> {
 impl<'a> From<&'a NameForm> for NameFormData<'a> {
     fn from(form: &'a NameForm) -> Self {
         Self {
+            templates: form.template.map(|_| crate::page_templates::TEMPLATES),
+            selected_template: form.template.map(|t| t.key),
             operation_id: form.operation_id,
             title: &form.title,
             error: &form.error,
@@ -260,7 +271,9 @@ impl<'a> From<&'a NameForm> for NameFormData<'a> {
 struct PageData<'a> {
     id: Uuid,
     section_id: Uuid,
+    parent_id: Option<Uuid>,
     title: &'a str,
+    can_edit: bool,
 }
 
 impl<'a> From<&'a Page> for PageData<'a> {
@@ -268,7 +281,9 @@ impl<'a> From<&'a Page> for PageData<'a> {
         Self {
             id: page.id,
             section_id: page.section_id,
+            parent_id: page.parent_id,
             title: &page.title,
+            can_edit: page.can_edit,
         }
     }
 }

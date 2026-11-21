@@ -27,7 +27,13 @@ app/**
 !app/sign-in.mjs
 !app/space-form.mjs
 !app/page-editor.js
+!app/page-embed.js
 !app/workspace-menu.mjs
+!app/workspace-chrome.js
+!app/workspace-graph.js
+!app/parity.css
+!app/organization.css
+!app/organization.mjs
 
 **/.env
 **/.env.*

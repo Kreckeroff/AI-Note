@@ -1,25 +1,38 @@
 mod admin;
+mod approach_http;
 mod clock;
 mod coedit_http;
+mod collections_http;
 mod coedit_presence;
 mod cover_image;
 mod db;
+mod document_finding;
+mod document_path;
 mod external_sharing;
 mod http;
 mod identity;
+mod knowledge_graph;
 mod markdown;
+mod model_provider;
+mod organization_http;
 mod page_discussion_http;
 mod page_sharing_http;
+mod page_templates;
 mod page_social_route;
 mod registration;
 mod sections;
 mod sections_http;
 mod server;
 mod settings;
+mod tasks_http;
+mod teamstream;
+mod teamstream_http;
 mod text;
 mod views;
 mod workspace;
+mod workspace_chrome;
 mod workspace_http;
+mod workspace_icons;
 
 use std::{
     env,
@@ -33,7 +46,7 @@ use anyhow::{Context, bail, ensure};
 
 use crate::db::Store;
 
-const USAGE: &str = "sever <serve|migrate|import-sqlite FILE|create-account EMAIL NAME|configure-tenants FILE|configure-space-grants FILE>";
+const USAGE: &str = "sever <serve|serve-teamstream|migrate|import-sqlite FILE|create-account EMAIL NAME|configure-tenants FILE|configure-space-grants FILE>";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -52,6 +65,9 @@ async fn run() -> anyhow::Result<()> {
     if matches!(command.as_slice(), ["-h" | "--help"]) {
         println!("{USAGE}");
         return Ok(());
+    }
+    if matches!(command.as_slice(), ["serve-teamstream"]) {
+        return teamstream_http::run().await;
     }
     ensure!(
         matches!(

@@ -1,20 +1,54 @@
 use std::fmt::Write as _;
 
-use crate::text::{escape_html as html, js_trim};
+use crate::{
+    teamstream::Video,
+    text::{escape_html as html, js_trim},
+};
 
-use super::{AttachmentRender, inline};
+use super::{AttachmentRender, RenderedMarkdown, embeds, inline};
 
-pub(super) fn render(source: &str, attachment_url: &AttachmentRender<'_>) -> String {
+pub(super) fn render(
+    source: &str,
+    attachment_url: &AttachmentRender<'_>,
+    own_host: Option<&str>,
+) -> RenderedMarkdown {
     let lines: Vec<_> = source.split('\n').collect();
     let mut output = String::new();
+    let mut has_embeds = false;
+    let mut has_teamstream = false;
     let mut index = 0;
     while let Some(&line) = lines.get(index) {
         if js_trim(line).is_empty() {
             index += 1;
             continue;
         }
-        if let Some((marker, width, _)) = fence(line) {
-            index = render_fence(&mut output, &lines, index, marker, width);
+        if let Some((marker, width, info)) = fence(line) {
+            let start = index + 1;
+            let end = lines[start..]
+                .iter()
+                .position(|line| {
+                    fence(line).is_some_and(|(closer, closing_width, rest)| {
+                        closer == marker && closing_width >= width && js_trim(rest).is_empty()
+                    })
+                })
+                .map(|offset| start + offset);
+            let body = &lines[start..end.unwrap_or(lines.len())];
+            let language = info
+                .strip_suffix('\r')
+                .unwrap_or(info)
+                .trim_matches([' ', '\t']);
+            if let Some(address) = own_host
+                .filter(|_| language == embeds::LANGUAGE && end.is_some())
+                .and_then(|host| embeds::address(body, host))
+            {
+                let teamstream = Video::from_address(&address).is_some();
+                embeds::render(&mut output, &address, teamstream);
+                has_embeds = true;
+                has_teamstream |= teamstream;
+            } else {
+                render_fence(&mut output, body);
+            }
+            index = end.map_or(lines.len(), |end| end + 1);
             continue;
         }
         if let Some(alignments) = table_divider(&lines, index) {
@@ -52,32 +86,22 @@ pub(super) fn render(source: &str, attachment_url: &AttachmentRender<'_>) -> Str
         }
         index += 1;
     }
-    output
+    RenderedMarkdown {
+        html: output,
+        has_embeds,
+        has_teamstream,
+    }
 }
 
-fn render_fence(
-    output: &mut String,
-    lines: &[&str],
-    start: usize,
-    marker: u8,
-    width: usize,
-) -> usize {
+fn render_fence(output: &mut String, lines: &[&str]) {
     output.push_str("<pre><code>");
-    let mut index = start + 1;
-    while let Some(&line) = lines.get(index) {
-        if fence(line).is_some_and(|(closer, closing_width, rest)| {
-            closer == marker && closing_width >= width && js_trim(rest).is_empty()
-        }) {
-            break;
-        }
-        if index > start + 1 {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
             output.push('\n');
         }
         output.push_str(&html(line));
-        index += 1;
     }
     output.push_str("</code></pre>");
-    index + 1
 }
 
 fn fence(line: &str) -> Option<(u8, usize, &str)> {

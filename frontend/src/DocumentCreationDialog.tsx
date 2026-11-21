@@ -9,7 +9,7 @@ const labels = {
   section: {
     heading: 'Новый раздел',
     placeholder: 'Например, Документация',
-    help: 'От 1 до 100 символов. Название должно быть уникальным в пространстве.',
+    help: 'От 1 до 100 символов. Названия разделов на одном уровне должны отличаться.',
     blank: 'Введите название раздела.',
     saving: 'Создаём раздел.',
   },
@@ -53,7 +53,8 @@ export function DocumentCreationDialog({kind, form: fields, parentName}: {
       if (typeof value !== 'string') return;
       const trimmed = value.trim();
       if (!trimmed || value === trimmed || Array.from(trimmed).length > maxNameLength) return;
-      const encoded = new URLSearchParams([['operation_id', operationId], ['name', value]]);
+      const encoded = new URLSearchParams();
+      formData.forEach((entry, key) => { if (typeof entry === 'string') encoded.append(key, entry); });
       if (encoded.toString().length > maxFormBytes) formData.set('name', trimmed);
     }
 
@@ -68,7 +69,7 @@ export function DocumentCreationDialog({kind, form: fields, parentName}: {
       element.removeEventListener('formdata', trimOversizedPadding);
       window.removeEventListener('pageshow', resetSaving);
     };
-  }, [operationId]);
+  }, []);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     if (submitting.current) {
@@ -125,6 +126,21 @@ export function DocumentCreationDialog({kind, form: fields, parentName}: {
           <p className="form-error" id={serverErrorId} role="alert">
             {error}{retryTo && <> <a href={retryTo}>Открыть новую форму</a></>}
           </p>
+        )}
+        {kind === 'page' && fields.templates && (
+          <fieldset className="page-template-picker">
+            <legend>Начать с шаблона</legend>
+            {[{key: '', title: 'Пустая страница', source: ''}, ...fields.templates].map(template => (
+              <div className="page-template-option" key={template.key}>
+                <label>
+                  <input type="radio" name="template" value={template.key}
+                    defaultChecked={template.key === (fields.selectedTemplate ?? '')} />
+                  <span>{template.title}</span>
+                </label>
+                {template.source && <pre className="page-template-preview" aria-label="Содержимое шаблона" tabIndex={0}>{template.source}</pre>}
+              </div>
+            ))}
+          </fieldset>
         )}
         <div className="space-dialog-actions">
           <a className="space-action space-secondary" href={cancelTo} aria-disabled={saving || undefined}

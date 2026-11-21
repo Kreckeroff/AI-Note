@@ -56,13 +56,13 @@ export function mergePageDraft(base,draft,saved) {
   return fields;
 }
 
-export function withWorkspaceLock(save) {
-  return navigator.locks ? navigator.locks.request('sever.workspace.writes',save) : Promise.resolve().then(save);
+export function withWorkspaceLock(save,scope = '') {
+  return navigator.locks ? navigator.locks.request('sever.workspace.writes' + scope,save) : Promise.resolve().then(save);
 }
 
-export function connectPresence(onChange) {
+export function connectPresence(onChange,scope = '') {
   const id = crypto.randomUUID();
-  const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sever.workspace.presence.v1') : null;
+  const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sever.workspace.presence.v1' + scope) : null;
   const peers = new Map();
   const heartbeat = 2000, lifetime = 6800;
   let current = null;

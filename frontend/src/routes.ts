@@ -29,6 +29,10 @@ export function newSectionPath(tenantId: string, spaceId: string, options: Catal
   return from ? `${path}${path.includes('?') ? '&' : '?'}from=${encodeURIComponent(from)}` : path;
 }
 
+export function withParent(path: string, parent: string): string {
+  return `${path}${path.includes('?') ? '&' : '?'}parent=${encodeURIComponent(parent)}`;
+}
+
 export function withOptions(path: string, {q, page, scope}: CatalogOptions): string {
   const params = new URLSearchParams();
   if (q) params.set('q', q);

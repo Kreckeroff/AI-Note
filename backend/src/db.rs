@@ -1,19 +1,26 @@
+pub(crate) mod approaches;
 pub(crate) mod coedit_presence;
 pub(crate) mod coediting;
+pub(crate) mod collections;
 mod configuration;
+pub(crate) mod document_finding;
 pub(crate) mod external_sharing;
 pub(crate) mod import;
+pub(crate) mod knowledge_graph;
+pub(crate) mod organization;
 pub(crate) mod page_access;
 mod page_attachments;
 mod page_cover;
 pub(crate) mod page_discussion;
 mod page_format;
 mod page_history;
+pub(crate) mod page_rename;
 pub(crate) mod page_sharing;
 mod page_text;
 pub(crate) mod page_watch;
 mod pages;
 mod sections;
+pub(crate) mod tasks;
 
 pub(crate) use page_access::PageAddress;
 pub(crate) use page_attachments::{
@@ -276,7 +283,7 @@ impl Store {
                     g.role AS grant_role
              FROM tenant_memberships m JOIN spaces s ON s.tenant_id = m.tenant_id
              JOIN accounts owner ON owner.id = s.owner_account_id
-             LEFT JOIN space_grants g ON g.tenant_id = s.tenant_id
+             LEFT JOIN effective_space_grants g ON g.tenant_id = s.tenant_id
                   AND g.space_id = s.id AND g.account_id = m.account_id
              WHERE m.tenant_id = $1 AND m.account_id = $2 AND m.status = 'active'
                AND (s.owner_account_id = m.account_id OR m.role IN ('admin', 'superadmin') OR g.role IS NOT NULL)",
@@ -294,6 +301,25 @@ impl Store {
             }),
             Vec::new(),
         ))
+    }
+
+    pub(crate) async fn readable_page_titles(
+        &self,
+        account: Uuid,
+        tenant: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, String)>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT p.id, p.space_id, convert_from(p.title, 'UTF8')
+               FROM pages p
+               CROSS JOIN LATERAL page_permissions(p.tenant_id, p.space_id, $1, p.id) rights
+              WHERE p.tenant_id = $2 AND p.id = ANY($3) AND rights.can_read",
+        )
+        .bind(account)
+        .bind(tenant)
+        .bind(ids)
+        .fetch_all(&self.0)
+        .await
     }
 
     pub(crate) async fn create_space(

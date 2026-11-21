@@ -16,12 +16,12 @@ use uuid::Uuid;
 
 use crate::{
     db::{Attachment, AttachmentBody, AttachmentLookup, PageAddress, StageAttachment, Store},
-    http::{self, plain},
+    http::{self, content_disposition, plain},
     sections::PageAttachmentView,
     workspace::{AttachmentTarget, DocumentsRoute, attachment_draft_path, page_path},
 };
 
-use format::{FileFormat, content_disposition, decode_name};
+use format::{FileFormat, decode_name};
 
 const MISSING: &str = "Вложение не найдено.";
 const DENIED: &str = "У вас нет права прикреплять файлы к этой странице.";

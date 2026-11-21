@@ -6,7 +6,7 @@ use crate::db::{Space, Tenant};
 use crate::sections::SectionScreen;
 use crate::workspace::{
     CatalogOptions, Scope, WORKSPACE_PATH, WorkspaceContext, new_page_path, new_space_path,
-    section_path, space_path, spaces_path, with_options,
+    page_path, section_path, space_path, spaces_path, with_options,
 };
 
 use super::{ClientPage, NORTH_ICON, PageAssets, html, icon, page, sections};
@@ -419,6 +419,36 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
     let catalog_href = with_options(&spaces_path(ctx.tenant.id), options);
     let name = html(&space.name);
     let next = icon("next");
+    let section_trail = tree.selected.as_ref().map_or_else(String::new, |item| {
+        sections::section_trail(tree, item)
+            .iter()
+            .map(|section| {
+                let href =
+                    with_options(&section_path(ctx.tenant.id, space.id, section.id), options);
+                format!(
+                    r#"<a href="{}">{}</a>{next}"#,
+                    html(&href),
+                    html(&section.title)
+                )
+            })
+            .collect()
+    });
+    let page_trail = tree
+        .selected_page
+        .as_ref()
+        .map_or_else(String::new, |item| {
+            sections::page_trail(tree, item)
+                .iter()
+                .map(|page| {
+                    let href = with_options(&page_path(ctx.tenant.id, space.id, page.id), options);
+                    format!(
+                        r#"<a href="{}">{}</a>{next}"#,
+                        html(&href),
+                        html(&page.title)
+                    )
+                })
+                .collect()
+        });
     let (title, kind, crumb, contents) = match (&tree.selected, &tree.selected_page) {
         (Some(section), Some(page)) => {
             let space_href = html(&with_options(&space_path(ctx.tenant.id, space.id), options));
@@ -430,11 +460,35 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
                 page.title.as_str(),
                 "file",
                 format!(
-                    r#"<a href="{space_href}">{name}</a>{next}<a href="{section_href}">{section}</a>{next}<span aria-current="page">{page}</span>"#,
+                    r#"<a href="{space_href}">{name}</a>{next}{section_trail}<a href="{section_href}">{section}</a>{next}{page_trail}<span aria-current="page">{page}</span>"#,
                     section = html(&section.title),
                     page = html(&page.title),
                 ),
-                super::editor::page_contents(tree),
+                {
+                    let mut content = super::editor::page_contents(tree);
+                    if tree.can_create_section
+                        && tree
+                            .reading
+                            .as_ref()
+                            .and_then(|item| item.edit_to.as_ref())
+                            .is_some()
+                    {
+                        let href = crate::sections::with_parent(
+                            &with_options(
+                                &new_page_path(ctx.tenant.id, space.id, section.id),
+                                options,
+                            ),
+                            Some(page.id),
+                        );
+                        let _ = write!(
+                            content,
+                            r#"<a class="space-action space-secondary page-create-link" id="create-child-page" href="{}">{}Добавить дочернюю страницу</a>"#,
+                            html(&href),
+                            icon("add")
+                        );
+                    }
+                    content
+                },
             )
         }
         (Some(section), None) => {
@@ -443,7 +497,7 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
                 section.title.as_str(),
                 "folder",
                 format!(
-                    r#"<a href="{space_href}">{name}</a>{next}<span aria-current="page">{}</span>"#,
+                    r#"<a href="{space_href}">{name}</a>{next}{section_trail}<span aria-current="page">{}</span>"#,
                     html(&section.title),
                 ),
                 section_contents(ctx, space, tree, section.id),
@@ -485,7 +539,7 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
         {contents}
       </article>
     </div>"#,
-        sidebar = sections::tree_sidebar(ctx, space, tree, &catalog_href),
+        sidebar = sections::tree_sidebar(ctx, space, tree),
         catalog_href = html(&catalog_href),
         title = html(title),
         document_icon = icon(kind),
@@ -495,12 +549,23 @@ pub(crate) fn closed_space(ctx: &WorkspaceContext, space: &Space, tree: &Section
     let dialog = if let Some(form) = tree.page_form.as_ref() {
         sections::creation_dialog(
             form,
-            tree.selected.as_ref().map(|section| section.title.as_str()),
+            tree.selected_page
+                .as_ref()
+                .map(|page| page.title.as_str())
+                .or_else(|| tree.selected.as_ref().map(|section| section.title.as_str())),
             DocumentKind::Page,
         )
     } else {
         tree.form.as_ref().map_or_else(String::new, |form| {
-            sections::creation_dialog(form, Some(&space.name), DocumentKind::Section)
+            let parent = if form.action.contains("parent=") {
+                tree.selected
+                    .as_ref()
+                    .map(|section| section.title.as_str())
+                    .unwrap_or(&space.name)
+            } else {
+                &space.name
+            };
+            sections::creation_dialog(form, Some(parent), DocumentKind::Section)
         })
     };
     workspace_frame(
@@ -531,10 +596,15 @@ fn section_contents(
     tree: &SectionScreen,
     section: Uuid,
 ) -> String {
+    let children: String = tree.sections.iter().filter(|item| item.parent_id == Some(section))
+        .map(|item| {
+            let href = with_options(&section_path(ctx.tenant.id, space.id, item.id), &ctx.catalog.options);
+            format!(r#"<li><a class="space-action space-secondary" href="{}">{}<span>{}</span></a></li>"#,html(&href),icon("folder"),html(&item.title))
+        }).collect();
     let pages: String = tree
         .pages
         .iter()
-        .filter(|page| page.section_id == section)
+        .filter(|page| page.section_id == section && page.parent_id.is_none())
         .map(|page| {
             format!(
                 "<li>{}</li>",
@@ -542,12 +612,27 @@ fn section_contents(
             )
         })
         .collect();
-    let mut content = if pages.is_empty() {
+    let mut content = if pages.is_empty() && children.is_empty() {
         empty_documents("Этот раздел пока пуст")
     } else {
-        format!(r#"<ul class="section-pages-list">{pages}</ul>"#)
+        format!(r#"<ul class="section-pages-list">{children}{pages}</ul>"#)
     };
     if tree.can_create_section {
+        let href = crate::sections::with_parent(
+            &crate::workspace::new_section_path(
+                ctx.tenant.id,
+                space.id,
+                Some(section),
+                &ctx.catalog.options,
+            ),
+            Some(section),
+        );
+        let _ = write!(
+            content,
+            r#"<a class="space-action space-secondary page-create-link" href="{}">{}Добавить подраздел</a>"#,
+            html(&href),
+            icon("folder")
+        );
         let form_href = with_options(
             &new_page_path(ctx.tenant.id, space.id, section),
             &ctx.catalog.options,
@@ -746,6 +831,7 @@ mod tests {
                 role: "member".to_owned(),
                 can_create: true,
             },
+            account_id: Uuid::nil(),
             account_name: space.owner_name.clone(),
             tenants: vec![],
             available_spaces: vec![space.clone()],
@@ -760,6 +846,7 @@ mod tests {
         };
         let selected = Section {
             id: section_id,
+            parent_id: None,
             title: "Решения".to_owned(),
         };
         let section_href = format!(
@@ -769,6 +856,7 @@ mod tests {
         let mut tree = SectionScreen {
             sections: vec![Section {
                 id: section_id,
+                parent_id: None,
                 title: selected.title.clone(),
             }],
             pages: Vec::new(),
@@ -793,6 +881,7 @@ mod tests {
 
         tree.can_create_section = true;
         tree.form = Some(NameForm {
+            template: None,
             operation_id,
             title: "Решения < архив".to_owned(),
             error: "Уже есть раздел с таким названием.".to_owned(),
@@ -827,8 +916,8 @@ mod tests {
         assert_eq!(
             model["tree"],
             serde_json::json!({
-                "sections": [{"id": section_id, "title": "Решения"}],
-                "selected": {"id": section_id, "title": "Решения"},
+                "sections": [{"id": section_id, "parentId": null, "title": "Решения"}],
+                "selected": {"id": section_id, "parentId": null, "title": "Решения"},
                 "canCreateSection": true,
                 "canCreatePage": true,
                 "pages": [],

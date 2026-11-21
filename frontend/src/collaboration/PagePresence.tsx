@@ -4,7 +4,8 @@ import {newOperationId} from './api';
 import {isRevision} from './coeditingApi';
 
 type Person = {id: string; name: string; mode: 'read' | 'edit'};
-type PagePresenceSnapshot = {people: Person[]; publishedRevision: string; canEdit: boolean};
+type PagePresenceSnapshot = {people: Person[]; publishedRevision: string; canEdit: boolean; publicLinkActive?: boolean};
+type PagePresenceSample = PagePresenceSnapshot & {sampleStartedAt: number};
 
 function isPerson(value: unknown): value is Person {
   return value != null && typeof value === 'object' && 'id' in value && isAttachmentId(value.id) &&
@@ -16,12 +17,13 @@ function isPresenceSnapshot(value: unknown): value is PagePresenceSnapshot {
   return value != null && typeof value === 'object' && 'people' in value &&
     Array.isArray(value.people) && value.people.every(isPerson) &&
     'publishedRevision' in value && isRevision(value.publishedRevision) &&
-    'canEdit' in value && typeof value.canEdit === 'boolean';
+    'canEdit' in value && typeof value.canEdit === 'boolean' &&
+    (!('publicLinkActive' in value) || typeof value.publicLinkActive === 'boolean');
 }
 
 export function usePagePresence(path: string | undefined, editing: boolean, onDenied: () => void) {
   const tab = useRef<string | null>(null);
-  const [state, setState] = useState<{path:string; presence?: PagePresenceSnapshot}>();
+  const [state, setState] = useState<{path:string; presence?: PagePresenceSample}>();
   const denied = useRef(onDenied);
   denied.current = onDenied;
 
@@ -74,7 +76,7 @@ export function usePagePresence(path: string | undefined, editing: boolean, onDe
             denied.current();
           } else {
             if (expiry !== undefined) window.clearTimeout(expiry);
-            setState({path:path!,presence:value});
+            setState({path:path!,presence:{...value,sampleStartedAt:started}});
             expiry = window.setTimeout(clearPresence,remaining);
           }
         } else clearPresence();

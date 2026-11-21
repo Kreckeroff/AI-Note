@@ -111,7 +111,7 @@ pub(crate) async fn handle(
         }
         SocialRoute::Published(id, token, resource) => {
             return delivery
-                .published(store, request.method(), id, token, resource)
+                .published(store, request, id, token, resource, origin)
                 .await;
         }
         _ => {}

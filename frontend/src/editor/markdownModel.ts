@@ -1,6 +1,21 @@
 export type EditorCommand = 'heading' | 'bold' | 'italic' | 'strike' | 'list' | 'bullet' | 'ordered'
   | 'task' | 'quote' | 'code' | 'code-block' | 'rule' | 'table';
 export type SourceRange = {start: number; end: number};
+export const inlineFormats = ['bold', 'italic', 'strike', 'code'] as const;
+export type SelectionFormatting = Record<typeof inlineFormats[number], boolean | 'mixed'>;
+
+export function selectionFormatting(model: MarkdownDocument, range: SourceRange): SelectionFormatting {
+  const caret = range.start === range.end;
+  const runs = model.runs.filter(run => !run.locked && (caret
+    ? run.offsets[0] <= range.start && range.start <= run.offsets.at(-1)!
+    : run.offsets[0] < range.end && range.start < run.offsets.at(-1)! && run.text.length > 0));
+  const states: SelectionFormatting = {bold:false, italic:false, strike:false, code:false};
+  for (const format of inlineFormats) {
+    const marked = runs.filter(run => run.marks.some(mark => mark.kind === format)).length;
+    states[format] = marked > 0 && (marked === runs.length || 'mixed');
+  }
+  return states;
+}
 
 type MarkKind = 'bold' | 'italic' | 'strike' | 'code' | 'link';
 
@@ -35,11 +50,41 @@ export type EditorBlock = {
   indent?: number;
   markerStart?: number;
   task?: SourceRange & {checked: boolean};
+  embed?: ExternalEmbedAddress;
   fence?: {marker: string; language: string; infoStart: number; infoEnd: number; bodyEnd: number; closingStart: number | null};
   table?: {rows: {cells: TableCell[]}[]; alignments: TableAlignment[]; separator: SourceRange};
   locked: boolean;
   runs: TextRun[];
 };
+
+export type ExternalEmbedAddress = {url: string; host: string; kind?: 'teamstream'};
+
+const teamStreamOrigin = 'https://workspace.teamstream.mws.ru';
+const teamStreamPath = /^\/embed\/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
+
+function isTeamStreamAddress(address: URL): boolean {
+  if (address.origin !== teamStreamOrigin || !teamStreamPath.test(address.pathname)) return false;
+  const suffix = address.href.slice(address.origin.length + address.pathname.length);
+  const seconds = /^\?t=([0-9]+)$/.exec(suffix)?.[1];
+  return suffix === '' || seconds !== undefined && Number(seconds) <= 0xffffffff;
+}
+
+export function externalEmbedAddress(value: string, ownHost = globalThis.location?.hostname): ExternalEmbedAddress | undefined {
+  const input = value.replace(/^[ \t]+|[ \t]+$/g, '');
+  const authority = /^https:\/\/([^/?#]+)/i.exec(input)?.[1];
+  if (!authority || authority.includes('@') || /[\x00-\x20\x7f\\]/.test(input)) return;
+  try {
+    const address = new URL(input);
+    const host = address.hostname.replace(/\.+$/, '');
+    if (!host || address.protocol !== 'https:' || address.username || address.password ||
+      host === ownHost?.toLowerCase().replace(/\.+$/, '')) return;
+    const embed: ExternalEmbedAddress = {url: address.href, host: address.hostname};
+    if (isTeamStreamAddress(address)) embed.kind = 'teamstream';
+    return embed;
+  } catch {
+    return;
+  }
+}
 
 export type MarkdownDocument = {
   blocks: EditorBlock[];
@@ -65,6 +110,12 @@ export function decodeLegacyText(value: string): string {
 
 export function normalizeEditorText(value: string): string {
   return value.replace(/\r\n?/g, '\n');
+}
+
+const internalPagePath = /^\/workspace\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/spaces\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/pages\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
+
+export function editorLinkDestination(value: string): string | null {
+  return internalPagePath.test(value) ? value : httpDestination(value);
 }
 
 export function httpDestination(value: string): string | null {
@@ -165,7 +216,7 @@ function inlineTokens(source: string, start: number, end: number, links = true) 
       const link = linkAt(source, position, end);
       if (link) {
         const hasLabel = link.label < link.labelEnd;
-        const href = !link.image && hasLabel ? httpDestination(decodeLegacyText(link.destination)) : null;
+        const href = !link.image && hasLabel ? editorLinkDestination(decodeLegacyText(link.destination)) : null;
         if (href) {
           const caption = inlineTokens(source, link.label, link.labelEnd, false);
           marks.push({kind: 'link', openStart: position, openEnd: link.label,
@@ -330,7 +381,7 @@ function trimHorizontal(text: string, start: number, end: number): SourceRange {
   return {start, end};
 }
 
-function tableCells(line: SourceLine): (SourceRange & {contentEnd: number})[] | undefined {
+export function tableCells(line: SourceLine): (SourceRange & {rawStart: number; contentEnd: number})[] | undefined {
   const {text} = line;
   const bounds = trimHorizontal(text, 0, text.length);
   const separators: number[] = [];
@@ -346,9 +397,10 @@ function tableCells(line: SourceLine): (SourceRange & {contentEnd: number})[] | 
   const end = trailing ? bounds.end - 1 : text.length;
   if (start > end) return;
   return [...separators.slice(Number(leading), separators.length - Number(trailing)), end].map(separator => {
+    const rawStart = line.start + start;
     const cell = trimHorizontal(text, start, separator);
     start = separator + 1;
-    return {start: line.start + cell.start, end: line.start + separator, contentEnd: line.start + cell.end};
+    return {rawStart, start: line.start + cell.start, end: line.start + separator, contentEnd: line.start + cell.end};
   });
 }
 
@@ -403,10 +455,13 @@ export function parseMarkdown(source: string, legacy: boolean): MarkdownDocument
       const bodyEnd = closing !== undefined ? Math.max(bodyStart, lines[last].start - 1) : end;
       const marker = opening[1];
       const info = trimHorizontal(source, line.end - opening[2].length, line.end);
-      const locked = closing === undefined;
-      blocks.push({kind: 'fence', start: line.start, end, bodyStart, locked,
-        runs: [makeRun(source, bodyStart, bodyEnd, [], locked, true)],
-        fence: {marker, language: source.slice(info.start, info.end), infoStart: info.start, infoEnd: info.end,
+      const language = source.slice(info.start, info.end);
+      const embed = closing !== undefined && language === 'sever-embed'
+        ? externalEmbedAddress(source.slice(bodyStart, bodyEnd)) : undefined;
+      const locked = closing === undefined || Boolean(embed);
+      blocks.push({kind: 'fence', start: line.start, end, bodyStart, locked, embed,
+        runs: embed ? [] : [makeRun(source, bodyStart, bodyEnd, [], locked, true)],
+        fence: {marker, language, infoStart: info.start, infoEnd: info.end,
           bodyEnd, closingStart: closing === undefined ? null : lines[closing].start}});
       index = last;
       continue;
@@ -425,6 +480,11 @@ export function parseMarkdown(source: string, legacy: boolean): MarkdownDocument
     const previous = blocks.at(-1);
     blocks.push(makeBlock(source, line, legacy, previous?.indent !== undefined));
   }
+  if (blocks.at(-1)?.embed) {
+    // Keep an editable caret after an atomic embed that reaches EOF.
+    const end = source.length;
+    blocks.push(makeBlock(source, {text: '', start: end, end}, legacy, false));
+  }
   return {blocks, runs: blocks.flatMap(block => block.runs)};
 }
 
@@ -441,4 +501,49 @@ export function isProtected(document: MarkdownDocument, range: SourceRange): boo
     return block.table && !block.table.rows.some(row => row.cells.some(cell => within(cell.start, cell.end)));
   })
     || document.runs.some(run => run.locked && intersects(run.offsets[0], run.offsets.at(-1)!));
+}
+
+type BlockKind = EditorBlock['kind'] | 'list';
+
+export type BlockUnit = {
+  kind: BlockKind;
+  start: number;
+  end: number;
+  caret: number;
+  safe: boolean;
+};
+
+// These constructs can span multiple visually separate paragraphs. Their
+// boundaries belong to the Markdown source until the editor models them.
+const rawContainer = /^\s*(?:<[/!?a-zA-Z]|\$\$|:::{1,}|\[.{1,999}\]:|={2,}\s*$|(?:-{2,}|\*{3,}|_{3,})\s*$)/;
+
+export function blockUnits(model: MarkdownDocument, source: string, legacy: boolean): BlockUnit[] {
+  const units: BlockUnit[] = [];
+  let ambiguous = false;
+  for (const block of model.blocks) {
+    const raw = source.slice(block.start,block.end);
+    if (!raw.trim()) continue;
+    const previous = units.at(-1);
+    const kind = block.kind === 'bullet' || block.kind === 'ordered' ? 'list' : block.kind;
+    const adjacent = previous && previous.end + 1 === block.start;
+    const indented = /^[ \t]/.test(raw);
+    if (!legacy && kind === 'paragraph' && (rawContainer.test(raw) ||
+        (previous?.kind !== 'list' && /^( {4}|\t)/.test(raw)))) ambiguous = true;
+    // A blank line can precede an indented child. Some of those children are
+    // opaque to the visual renderer, so protect their parent as a whole.
+    const listChild = previous?.kind === 'list' &&
+      ((kind === 'paragraph' && adjacent) || indented);
+    const lazyQuote = previous?.kind === 'quote' && kind === 'paragraph' && adjacent;
+    const sameGroup = adjacent && previous.kind === kind &&
+      (kind === 'paragraph' || kind === 'quote' || kind === 'list');
+    if (!legacy && previous && (listChild || lazyQuote || sameGroup)) {
+      previous.end = block.end;
+      if (kind === 'protected' || (kind === 'fence' && block.fence?.closingStart === null)) previous.safe = false;
+      continue;
+    }
+    const safe = kind !== 'protected' && !(kind === 'fence' && block.fence?.closingStart === null);
+    units.push({kind,start:block.start,end:block.end,caret:block.runs.find(run => !run.locked)?.offsets[0] ?? block.bodyStart,safe});
+  }
+  if (ambiguous) for (const unit of units) unit.safe = false;
+  return units;
 }

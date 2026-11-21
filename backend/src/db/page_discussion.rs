@@ -202,6 +202,7 @@ impl Store {
     pub(crate) async fn write_comment(
         &self,
         address: &PageAddress,
+        origin: &str,
         mut command: CommentCommand,
     ) -> Result<DiscussionOutcome, sqlx::Error> {
         if !command.normalize() {
@@ -262,7 +263,7 @@ impl Store {
                 ..
             } => {
                 let anchor = if let Some(input) = anchor {
-                    let current = published_text(&mut tx, address).await?;
+                    let current = published_text(&mut tx, address, origin).await?;
                     let Some(anchor) = input.validate(current) else {
                         return Ok(DiscussionOutcome::AnchorConflict);
                     };

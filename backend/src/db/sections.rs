@@ -8,6 +8,7 @@ use crate::text::{fold_name, js_trim};
 #[derive(Clone)]
 pub(crate) struct Section {
     pub id: Uuid,
+    pub parent_id: Option<Uuid>,
     pub title: String,
 }
 
@@ -22,8 +23,11 @@ struct TreeRow {
     can_create: bool,
     section_id: Option<Uuid>,
     section_title: Option<Vec<u8>>,
+    section_parent_id: Option<Uuid>,
     page_id: Option<Uuid>,
     page_title: Option<Vec<u8>>,
+    page_parent_id: Option<Uuid>,
+    page_can_edit: Option<bool>,
 }
 
 pub(crate) enum CreateSection {
@@ -33,6 +37,7 @@ pub(crate) enum CreateSection {
     OperationConflict,
     EmptyName,
     LongName,
+    TooDeep,
     Duplicate,
 }
 
@@ -41,7 +46,7 @@ pub(super) const SPACE_ACCESS: &str =
     "SELECT (s.owner_account_id = m.account_id OR g.role IS NOT DISTINCT FROM 'editor') AS can_create
      FROM tenant_memberships m
      JOIN spaces s ON s.tenant_id = m.tenant_id AND s.id = $2
-     LEFT JOIN space_grants g ON g.tenant_id = s.tenant_id AND g.space_id = s.id AND g.account_id = m.account_id
+     LEFT JOIN effective_space_grants g ON g.tenant_id = s.tenant_id AND g.space_id = s.id AND g.account_id = m.account_id
      WHERE m.tenant_id = $1 AND m.account_id = $3 AND m.status = 'active'
        AND (s.owner_account_id = m.account_id OR m.role IN ('admin', 'superadmin') OR g.role IS NOT NULL)";
 
@@ -50,7 +55,12 @@ pub(super) async fn lock_active_member(
     tenant: Uuid,
     account: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    // Grant changes lock this membership. Check the grant after taking that lock.
+    // Match the authorization mutation order for rule and direct grant changes.
+    sqlx::query("SELECT id FROM tenants WHERE id = $1 FOR SHARE")
+        .bind(tenant)
+        .fetch_optional(&mut *tx)
+        .await?;
+    // Direct grant changes also lock this membership before changing the grant.
     let member: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM tenant_memberships
          WHERE tenant_id = $1 AND account_id = $2 AND status = 'active' FOR UPDATE",
@@ -69,6 +79,31 @@ pub(super) fn decode_title(title: Vec<u8>, column: &str) -> Result<String, sqlx:
     })
 }
 
+impl SectionTree {
+    pub(crate) fn first_page(&self) -> Option<&Page> {
+        use std::collections::HashMap;
+
+        let mut children: HashMap<Option<Uuid>, Vec<&Section>> = HashMap::new();
+        for section in &self.sections {
+            children.entry(section.parent_id).or_default().push(section);
+        }
+        let mut first_in_section = HashMap::new();
+        for page in self.pages.iter().filter(|page| page.parent_id.is_none()) {
+            first_in_section.entry(page.section_id).or_insert(page);
+        }
+        let mut pending: Vec<&Section> = children.get(&None)?.iter().rev().copied().collect();
+        while let Some(section) = pending.pop() {
+            if let Some(subsections) = children.get(&Some(section.id)) {
+                pending.extend(subsections.iter().rev().copied());
+            }
+            if let Some(page) = first_in_section.get(&section.id) {
+                return Some(page);
+            }
+        }
+        None
+    }
+}
+
 impl Store {
     pub(crate) async fn sections(
         &self,
@@ -77,11 +112,14 @@ impl Store {
         account: Uuid,
     ) -> Result<Option<SectionTree>, sqlx::Error> {
         let query = format!(
-            "SELECT access.can_create, r.id AS section_id, r.title AS section_title,
-                    p.id AS page_id, p.title AS page_title
+            "SELECT access.can_create, r.id AS section_id, r.title AS section_title, r.parent_id AS section_parent_id,
+                    p.id AS page_id, p.title AS page_title, p.parent_id AS page_parent_id,
+                    CASE WHEN access.can_create THEN true ELSE permissions.can_edit END AS page_can_edit
              FROM ({SPACE_ACCESS}) access
              LEFT JOIN sections r ON r.tenant_id = $1 AND r.space_id = $2
              LEFT JOIN pages p ON p.tenant_id = r.tenant_id AND p.space_id = r.space_id AND p.section_id = r.id
+             LEFT JOIN LATERAL (SELECT can_edit FROM page_permissions($1, $2, $3, p.id)
+                                WHERE p.id IS NOT NULL AND NOT access.can_create) permissions ON true
              ORDER BY r.position, p.position",
         );
         let rows: Vec<TreeRow> = sqlx::query_as(&query)
@@ -107,6 +145,7 @@ impl Store {
                 {
                     tree.sections.push(Section {
                         id: section_id,
+                        parent_id: row.section_parent_id,
                         title: decode_title(title, "sections.title")?,
                     });
                 }
@@ -114,7 +153,9 @@ impl Store {
                     tree.pages.push(Page {
                         id,
                         section_id,
+                        parent_id: row.page_parent_id,
                         title: decode_title(title, "pages.title")?,
+                        can_edit: row.page_can_edit.unwrap_or(false),
                     });
                 }
             }
@@ -122,6 +163,7 @@ impl Store {
         Ok(Some(tree))
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_section(
         &self,
         tenant: Uuid,
@@ -129,6 +171,19 @@ impl Store {
         account: Uuid,
         operation: Uuid,
         entered: &str,
+    ) -> Result<CreateSection, sqlx::Error> {
+        self.create_section_under(tenant, space, account, operation, entered, None)
+            .await
+    }
+
+    pub(crate) async fn create_section_under(
+        &self,
+        tenant: Uuid,
+        space: Uuid,
+        account: Uuid,
+        operation: Uuid,
+        entered: &str,
+        parent: Option<Uuid>,
     ) -> Result<CreateSection, sqlx::Error> {
         let mut tx = self.0.begin().await?;
         sqlx::query("SET LOCAL statement_timeout = '3s'")
@@ -152,8 +207,32 @@ impl Store {
             Some(true) => {}
         }
 
+        if let Some(parent) = parent {
+            let found: Option<i32> = sqlx::query_scalar(
+                "WITH RECURSIVE chain(id, parent_id, depth) AS (
+                    SELECT id, parent_id, 1 FROM sections WHERE (tenant_id, space_id, id) = ($1,$2,$3)
+                    UNION ALL
+                    SELECT r.id, r.parent_id, c.depth + 1
+                    FROM chain c JOIN sections r ON (r.tenant_id, r.space_id, r.id) = ($1,$2,c.parent_id)
+                    WHERE c.depth < 64
+                 )
+                 SELECT depth FROM chain WHERE parent_id IS NULL",
+            ).bind(tenant).bind(space).bind(parent).fetch_optional(&mut *tx).await?;
+            match found {
+                None => return Ok(CreateSection::MissingSpace),
+                Some(depth) if depth >= 64 => return Ok(CreateSection::TooDeep),
+                _ => {}
+            }
+        }
+
         let title = js_trim(entered);
-        let fingerprint = format!("{:x}", Sha256::digest(title.as_bytes()));
+        let fingerprint = match parent {
+            Some(parent) => format!(
+                "{:x}",
+                Sha256::digest([parent.as_bytes().as_slice(), title.as_bytes()].concat())
+            ),
+            None => format!("{:x}", Sha256::digest(title.as_bytes())),
+        };
         let existing: Option<(String, Uuid)> = sqlx::query_as(
             "SELECT request_fingerprint, section_id FROM section_creations
              WHERE tenant_id = $1 AND space_id = $2 AND creator_account_id = $3 AND operation_id = $4",
@@ -180,10 +259,10 @@ impl Store {
 
         let id = Uuid::new_v4();
         let added = sqlx::query(
-            "INSERT INTO sections (tenant_id, space_id, id, creator_account_id, title, title_key, position)
-             SELECT $1, $2, $3, $4, $5, $6, coalesce(max(position), 0) + 1
+            "INSERT INTO sections (tenant_id, space_id, id, creator_account_id, title, title_key, position, parent_id)
+             SELECT $1, $2, $3, $4, $5, $6, coalesce(max(position), 0) + 1, $7
              FROM sections WHERE tenant_id = $1 AND space_id = $2
-             ON CONFLICT (tenant_id, space_id, title_key) DO NOTHING",
+             ON CONFLICT ON CONSTRAINT sections_sibling_title_key DO NOTHING",
         )
         .bind(tenant)
         .bind(space)
@@ -191,6 +270,7 @@ impl Store {
         .bind(account)
         .bind(title.as_bytes())
         .bind(fold_name(title).into_bytes())
+        .bind(parent)
         .execute(&mut *tx)
         .await?;
         if added.rows_affected() == 0 {

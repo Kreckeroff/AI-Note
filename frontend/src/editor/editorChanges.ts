@@ -1,5 +1,5 @@
 import {
-  decodeLegacyText, escapeLiteralText, httpDestination, isProtected, normalizeEditorText, parseMarkdown,
+  blockUnits, decodeLegacyText, escapeLiteralText, externalEmbedAddress, editorLinkDestination, isProtected, normalizeEditorText, parseMarkdown,
   type EditorBlock, type EditorCommand, type InlineMark, type MarkdownDocument, type SourceRange, type TextRun,
 } from './markdownModel';
 
@@ -424,6 +424,10 @@ export function insertVisual(
   if (isProtected(document, range)) return unchanged(source, legacy, range);
   const input = normalizeEditorText(value);
   const structural = intersectedStructure(document, range);
+  if (structural?.embed && range.start === source.length && range.start === range.end) {
+    const text = kind === 'paragraph' || kind === 'line' ? '' : escapeLiteralText(input);
+    return change(source, legacy, range, '\n\n' + text);
+  }
   if (structural?.kind === 'fence') {
     return editFence(source, range, kind === 'paragraph' || kind === 'line' ? '\n' : input, structural);
   }
@@ -844,10 +848,15 @@ export function applyCommand(source: string, legacy: boolean, range: SourceRange
 }
 
 type BlockInsertion = {value: string; anchor: number; followingParagraph?: boolean};
-type SlashCommand = BlockCommand | SpecialBlockCommand;
+export type BlockMenuCommand = BlockCommand | SpecialBlockCommand | 'heading-one' | 'heading-three';
 
-function blockTemplate(command: SlashCommand, body = ''): BlockInsertion {
+function blockTemplate(command: BlockMenuCommand, body = ''): BlockInsertion {
   switch (command) {
+    case 'heading-one':
+    case 'heading-three': {
+      const value = (command === 'heading-one' ? '# ' : '### ') + 'Заголовок';
+      return {value, anchor:value.length};
+    }
     case 'code-block': {
       const text = body || 'код';
       const fence = '\x60'.repeat(Math.max(3, fenceCollision(text, '\x60') + 1));
@@ -885,13 +894,9 @@ function visibleBlockText(document: MarkdownDocument, range: SourceRange): strin
     .join('\n');
 }
 
-function insertionGroupEnd(document: MarkdownDocument, block: EditorBlock): number {
-  const isList = listItem(block);
-  if (!isList && block.kind !== 'quote') return block.end;
-  const {blocks} = document;
-  let index = blocks.indexOf(block);
-  while (isList ? listItem(blocks[index + 1]) : blocks[index + 1]?.kind === 'quote') index++;
-  return blocks[index].end;
+function insertionGroupEnd(source: string, document: MarkdownDocument, block: EditorBlock): number {
+  const group = blockUnits(document, source, false).find(unit => unit.start <= block.start && block.end <= unit.end);
+  return group?.end ?? block.end;
 }
 
 function insertFormattedBlock(source: string, document: MarkdownDocument, range: SourceRange, raw: BlockInsertion): EditorChange {
@@ -901,7 +906,7 @@ function insertFormattedBlock(source: string, document: MarkdownDocument, range:
     if (!source.slice(block.start, block.end).trim()) {
       return insertBlock(source, {start: block.start, end: block.end}, raw);
     }
-    const end = insertionGroupEnd(document, block);
+    const end = insertionGroupEnd(source, document, block);
     return insertBlock(source, {start: end, end}, raw);
   }
   const rawEdit = insertBlock(source, range, raw);
@@ -923,17 +928,40 @@ function insertAfterSlash(source: string, document: MarkdownDocument, range: Sou
   if (!removed.source.slice(block.start, blockEnd).trim()) {
     return insertBlock(removed.source, {start:block.start, end: blockEnd}, raw);
   }
-  const end = insertionGroupEnd(document, block) + offset;
+  const end = insertionGroupEnd(source, document, block) + offset;
   return insertBlock(removed.source, {start: end, end}, raw);
 }
 
-export function applySlashCommand(source: string, legacy: boolean, range: SourceRange, command: EditorCommand): EditorChange {
-  if (!slashToken.test(source.slice(range.start, range.end)) || command === 'bold' || command === 'italic'
-    || command === 'strike' || command === 'code') return unchanged(source, legacy, range);
-  if (isProtected(parseMarkdown(source, legacy), range)) return unchanged(source, legacy, range);
+function insertMenuTemplate(source: string, legacy: boolean, range: SourceRange, template: BlockInsertion): EditorChange {
+  const atCaret = range.start === range.end;
+  if ((!atCaret && !slashToken.test(source.slice(range.start, range.end))) ||
+      isProtected(parseMarkdown(source, legacy), range)) return unchanged(source, legacy, range);
   const promoted = promote(source, legacy, range);
-  const result = insertAfterSlash(promoted.source, parseMarkdown(promoted.source, false), promoted.range, blockTemplate(command));
+  const insert = atCaret ? insertFormattedBlock : insertAfterSlash;
+  const result = insert(promoted.source, parseMarkdown(promoted.source, false), promoted.range, template);
   return result.source === promoted.source ? unchanged(source, legacy, range) : result;
+}
+
+export function insertMenuBlock(source: string, legacy: boolean, range: SourceRange, command: BlockMenuCommand): EditorChange {
+  return insertMenuTemplate(source, legacy, range, blockTemplate(command));
+}
+
+export function insertExternalEmbed(source: string, legacy: boolean, range: SourceRange, address: string): EditorChange {
+  const embed = externalEmbedAddress(address);
+  if (!embed) return unchanged(source, legacy, range);
+  const value = '```sever-embed\n' + embed.url + '\n```';
+  return insertMenuTemplate(source, legacy, range, {value, anchor: value.length + 1, followingParagraph: true});
+}
+
+export function updateExternalEmbed(source: string, legacy: boolean, blockRange: SourceRange, original: string, address?: string) {
+  const block = blockAt(parseMarkdown(source, legacy), blockRange.start);
+  if (!block?.embed || !block.fence || block.start !== blockRange.start || block.end !== blockRange.end || block.embed.url !== original) return;
+  const url = address === undefined ? undefined : externalEmbedAddress(address)?.url;
+  if (address !== undefined && !url) return;
+  const before = url ? {start: block.bodyStart, end: block.fence.bodyEnd} : blockRange;
+  const changed = url === original ? unchanged(source, legacy, before) : change(source, legacy, before, url ?? '');
+  const end = url ? block.end + changed.source.length - source.length + Number(source[block.end] === '\n') : changed.end;
+  return {change: changed, before, after: {start: end, end}};
 }
 
 export function pasteMarkdown(source: string, legacy: boolean, range: SourceRange, input: string): EditorChange {
@@ -1085,7 +1113,7 @@ function selectedLabel(document: MarkdownDocument, range: SourceRange): string {
 export function applyLink(
   source: string, legacy: boolean, range: SourceRange, label: string, address: string,
 ): EditorChange {
-  const href = httpDestination(address.trim());
+  const href = editorLinkDestination(address.trim());
   const initial = parseMarkdown(source, legacy);
   const block = blockAt(initial, range.start);
   if (!href || !label.trim() || /[\r\n]/.test(label) || !block || block !== blockAt(initial, range.end)

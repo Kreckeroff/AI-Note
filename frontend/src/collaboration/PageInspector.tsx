@@ -1,5 +1,6 @@
 import {useLayoutEffect, useRef, useSyncExternalStore} from 'react';
 import {Icon} from '../Icon';
+import type {RelatedDocument} from '../model';
 import {PageHistoryPanel} from '../editor/PageHistoryPanel';
 import {CollaborationTabs} from './CollaborationTabs';
 import {PageDiscussion} from './PageDiscussion';
@@ -19,7 +20,7 @@ function onViewportChange(handler: () => void) {
 }
 
 export function PageInspector({id, pageTo, title, role, revision, pageOnly, open, tab, onTab, onDismiss,
-  historyTo, editing, anchor, onClearAnchor, onJump, reference}: {
+  historyTo, editing, anchor, onClearAnchor, onJump, reference, outline, related, graphTo, onHeading}: {
   id: string;
   pageTo: string;
   title: string;
@@ -36,6 +37,10 @@ export function PageInspector({id, pageTo, title, role, revision, pageOnly, open
   onClearAnchor(): void;
   onJump(anchor: DiscussionAnchor): boolean;
   reference?: DiscussionReference;
+  outline: ReadonlyArray<{id: string; title: string; level: number}>;
+  related: readonly RelatedDocument[];
+  graphTo?: string;
+  onHeading(id: string): void;
 }) {
   const narrow = useSyncExternalStore(onViewportChange, () => window.matchMedia(narrowScreen).matches, () => false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -74,6 +79,24 @@ export function PageInspector({id, pageTo, title, role, revision, pageOnly, open
       </header>
       <CollaborationTabs id={id} label="Контекст страницы" tabs={shownTabs} value={availableTab} onChange={onTab} />
       <section className="document-inspector-content inspector-context" {...attributes('context')}>
+        {outline.length > 0 && <div className="inspector-property"><h3>Оглавление</h3>
+          <nav className="inspector-outline" aria-label="Оглавление"><ol>{outline.map(heading => (
+            <li key={heading.id} data-heading-level={heading.level}>
+              <a href={`#${heading.id}`} onClick={event => { event.preventDefault(); onHeading(heading.id); }}>{heading.title}</a>
+            </li>
+          ))}</ol></nav></div>}
+        {(related.length > 0 || graphTo) && <div className="inspector-property"><h3>Связано со страницей</h3>
+          <ul className="inspector-related">{related.map(item => <li key={item.path}>
+            <a href={item.path}>
+              <span className="inspector-reference-icon"><Icon name={item.taskLabel ? 'board' : 'doc'} /></span>
+              <span><strong>{item.title}</strong>{item.taskLabel && <small>{item.taskLabel}</small>}</span>
+              <Icon name="next" />
+            </a>
+          </li>)}
+          {graphTo && <li><a href={graphTo}>
+            <span className="inspector-reference-icon"><Icon name="graph" /></span>
+            <span><strong>Узел в графе</strong><small>Связи и источник</small></span><Icon name="next" />
+          </a></li>}</ul></div>}
         <div className="inspector-property"><h3>Доступ</h3><p>{roleLabels[role]}</p>
           {pageOnly && <p>Только эта страница</p>}</div>
         <div className="inspector-property"><h3>О странице</h3><p>{title}</p>

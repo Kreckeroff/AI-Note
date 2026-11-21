@@ -98,12 +98,12 @@ impl SharingDelivery {
                 invites.truncate(SHARING_PAGE_SIZE);
                 json(serde_json::json!({"allowed":allowed,"deliveryConfigured":self.mail.is_some(),"invites":invites,"nextOffset":next}))
             }),
-            "link" => store.public_link_panel(address).await.map(|(id,policy)| {
+            "link" => store.public_link_panel(address,origin).await.map(|(id,policy,(contains_embed, contains_teamstream))| {
                 let link = id.filter(|_| policy.enabled).map(|id| {
                     let href = self.token(PUBLIC,id).map(|token| format!("{origin}/published/{id}/{token}"));
                     serde_json::json!({"id":id,"href":href})
                 });
-                json(serde_json::json!({"link":link,"policy":policy,"sharingConfigured":self.key.is_some()}))
+                json(serde_json::json!({"link":link,"policy":policy,"sharingConfigured":self.key.is_some(),"containsEmbed":contains_embed,"containsTeamStream":contains_teamstream}))
             }),
             _ => return Ok(sharing_error(StatusCode::BAD_REQUEST,"Неизвестная вкладка.")),
         };

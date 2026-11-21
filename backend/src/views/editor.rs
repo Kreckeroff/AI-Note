@@ -74,7 +74,11 @@ pub(super) fn page_contents(tree: &SectionScreen) -> String {
             .unwrap_or(r#"<p class="document-empty">Пока здесь ничего нет.</p>"#),
     );
     if let Some(reading) = &tree.reading {
+        if let Some(template) = reading.template {
+            let _ = write!(content, r#"<details class="page-template-origin" id="page-template"><summary>Исходный шаблон · {} · v{}</summary><pre>{}</pre></details>"#, html(template.title), template.revision, html(template.source));
+        }
         content.push_str(&attachment_list(&reading.attachments));
+        content.push_str(r#"<a class="space-action space-secondary page-create-link" href="?download=markdown">Скачать Markdown</a>"#);
     }
     content
 }

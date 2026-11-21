@@ -9,13 +9,15 @@ use super::{
 use crate::{
     db::{CreatePage, CreatePageInput, Principal, Store},
     http::{self, Form, FormError, html, plain, redirect},
-    sections::NameForm,
+    page_templates::{self, PageTemplate},
+    sections::{NameForm, with_parent},
     views,
     workspace::{DocumentsRoute, canonical_uuid, page_path, pages_path, with_options},
 };
 
 pub(super) const DENIED: &str = "У вас нет права создавать страницы в этом разделе.";
 const OPEN_FORM: &str = "Откройте форму создания страницы в «Севере».";
+const INVALID_TEMPLATE: &str = "Выберите один доступный шаблон.";
 const UNAVAILABLE: Failure = Failure {
     status: StatusCode::SERVICE_UNAVAILABLE,
     message: "Не удалось сохранить страницу. Попробуйте ещё раз.",
@@ -52,6 +54,11 @@ async fn read_creation_form(origin: &str, request: Request) -> Result<Form, Crea
     }
 }
 
+fn submitted_template(form: &Form) -> Option<&'static PageTemplate> {
+    let key = form.field("template").ok()?;
+    page_templates::find(key.unwrap_or(""))
+}
+
 pub(crate) async fn retry_before_authorization(
     route: DocumentsRoute,
     section: Uuid,
@@ -60,12 +67,16 @@ pub(crate) async fn retry_before_authorization(
 ) -> Response {
     let nav = DocumentNavigation::for_request(route, &request);
     match read_creation_form(origin, request).await {
-        Ok(input) => retry(
-            &nav,
-            section,
-            canonical_uuid(input.get("operation_id")),
-            input.get("name"),
-        ),
+        Ok(input) => match submitted_template(&input) {
+            Some(template) => retry(
+                &nav,
+                section,
+                canonical_uuid(input.get("operation_id")),
+                input.get("name"),
+                template,
+            ),
+            None => plain(StatusCode::UNPROCESSABLE_ENTITY, INVALID_TEMPLATE),
+        },
         Err(error) => error.response(),
     }
 }
@@ -75,17 +86,39 @@ pub(super) fn creation_form(
     section: Uuid,
     operation_id: Uuid,
     title: &str,
+    template: &'static PageTemplate,
     failure: Option<Failure>,
 ) -> NameForm {
+    let parent = nav.parent.ok().flatten();
+    let cancel_to = parent.map_or_else(
+        || nav.destination(Some(section)),
+        |id| {
+            with_options(
+                &page_path(nav.route.tenant, nav.route.space, id),
+                &nav.options,
+            )
+        },
+    );
     NameForm {
+        template: Some(template),
         operation_id,
         title: title.to_owned(),
         error: failure.map_or("", |value| value.message).to_owned(),
         invalid_name: failure.is_some_and(|value| value.invalid_name),
-        cancel_to: format!("{}#create-page", nav.destination(Some(section))),
-        action: with_options(
-            &pages_path(nav.route.tenant, nav.route.space, section),
-            &nav.options,
+        cancel_to: format!(
+            "{cancel_to}#{}",
+            if parent.is_some() {
+                "create-child-page"
+            } else {
+                "create-page"
+            }
+        ),
+        action: with_parent(
+            &with_options(
+                &pages_path(nav.route.tenant, nav.route.space, section),
+                &nav.options,
+            ),
+            parent,
         ),
         retry_to: None,
     }
@@ -111,17 +144,28 @@ pub(super) async fn submit(
     };
     let title = form.get("name");
     let operation = canonical_uuid(form.get("operation_id"));
-    let failure = match operation {
-        Some(id) => match timeout(
+    let template = submitted_template(&form);
+    let failure = match (operation, template) {
+        (_, None) => Failure {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: INVALID_TEMPLATE,
+            invalid_name: false,
+            new_form: false,
+        },
+        (Some(id), Some(template)) => match timeout(
             SAVE_TIMEOUT,
-            store.create_page(CreatePageInput {
-                tenant_id: route.tenant,
-                space_id: route.space,
-                section_id,
-                account_id: principal.id,
-                operation_id: id,
-                title,
-            }),
+            store.create_page_from_template(
+                CreatePageInput {
+                    tenant_id: route.tenant,
+                    space_id: route.space,
+                    section_id,
+                    account_id: principal.id,
+                    operation_id: id,
+                    title,
+                },
+                nav.parent.ok().flatten(),
+                template,
+            ),
         )
         .await
         {
@@ -158,6 +202,18 @@ pub(super) async fn submit(
                 invalid_name: true,
                 new_form: false,
             },
+            Ok(Ok(CreatePage::TooDeep)) => Failure {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                message: "Достигнута максимальная вложенность. Выберите уровень выше.",
+                invalid_name: false,
+                new_form: false,
+            },
+            Ok(Ok(CreatePage::InvalidName)) => Failure {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                message: "Введите название в одну строку без управляющих символов.",
+                invalid_name: true,
+                new_form: false,
+            },
             Ok(Ok(CreatePage::LongName)) => Failure {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: "Введите не больше 100 символов.",
@@ -166,7 +222,7 @@ pub(super) async fn submit(
             },
             Ok(Err(_)) | Err(_) => UNAVAILABLE,
         },
-        None => Failure {
+        (None, Some(_)) => Failure {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: "Не удалось подтвердить отправку. Повторите с этой формой.",
             invalid_name: false,
@@ -174,6 +230,7 @@ pub(super) async fn submit(
         },
     };
 
+    let template = template.unwrap_or(&page_templates::EMPTY);
     record(principal.id, route, failure.status.as_str());
     match timeout(RECOVERY_TIMEOUT, load(store, nav, principal)).await {
         Ok(Ok(Some(page))) => {
@@ -186,18 +243,27 @@ pub(super) async fn submit(
             let operation = operation
                 .filter(|_| !failure.new_form)
                 .unwrap_or_else(Uuid::new_v4);
-            let form = creation_form(nav, section_id, operation, title, Some(failure));
+            let form = creation_form(nav, section_id, operation, title, template, Some(failure));
+            let selected_page = nav.parent.ok().flatten().and_then(|parent| {
+                page.tree
+                    .pages
+                    .iter()
+                    .find(|item| item.id == parent)
+                    .cloned()
+            });
             page.render(
                 failure.status,
                 Selection {
                     section: Some(section),
+                    page: selected_page,
                     ..Selection::default()
                 },
                 Some(CreationDialog::Page(form)),
+                None,
             )
         }
         Ok(Ok(None)) => not_found(route.target),
-        Ok(Err(_)) | Err(_) => retry(nav, section_id, operation, title),
+        Ok(Err(_)) | Err(_) => retry(nav, section_id, operation, title, template),
     }
 }
 
@@ -206,13 +272,34 @@ fn retry(
     section_id: Uuid,
     operation: Option<Uuid>,
     title: &str,
+    template: &'static PageTemplate,
 ) -> Response {
     let form = creation_form(
         nav,
         section_id,
         operation.unwrap_or_else(Uuid::new_v4),
         title,
+        template,
         Some(UNAVAILABLE),
     );
     html(UNAVAILABLE.status, views::page_retry(&form))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_template_selection_is_single_valued_and_optional() {
+        for (query, expected) in [
+            ("", Some("")),
+            ("template=", Some("")),
+            ("template=spec-v1", Some("spec-v1")),
+            ("template=unavailable", None),
+            ("template=spec-v1&template=spec-v1", None),
+            ("template=&template=spec-v1", None),
+        ] {
+            assert_eq!(submitted_template(&Form::from_query(query)).map(|item| item.key), expected);
+        }
+    }
 }

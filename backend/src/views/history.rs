@@ -5,6 +5,7 @@ use crate::{
         PageContentFormat, PageCover, PageHistory, PageRevisionSnapshot,
         page_discussion::DiscussionQuote,
     },
+    markdown::{RenderedMarkdown, render_document},
     sections::{CoverView, PageAttachmentView},
     workspace::{page_history_path, page_path},
 };
@@ -76,21 +77,17 @@ impl Links {
 }
 
 fn document(title: &str, header: &str, content: &str) -> String {
+    history_document(title, header, content, false)
+}
+
+fn history_document(title: &str, header: &str, content: &str, embeds: bool) -> String {
     let body = format!(
         r#"<main class="history-page space-shell">
     <header class="history-page-header">{header}</header>
     {content}
 </main>"#
     );
-    page(
-        title,
-        &body,
-        PageAssets::Workspace {
-            menu: false,
-            form: false,
-        },
-        None,
-    )
+    page(title, &body, PageAssets::History { embeds }, None)
 }
 
 fn link(to: &str, label: &str) -> String {
@@ -223,6 +220,7 @@ pub(crate) fn snapshot(
     history: &PageHistory,
     confirming: bool,
     quote: Option<&DiscussionQuote>,
+    preview: Option<&RenderedMarkdown>,
 ) -> String {
     let number = snapshot.revision;
     let current = snapshot.current_revision.max(history.current_revision);
@@ -273,15 +271,56 @@ pub(crate) fn snapshot(
         html(&quote.quote),
         html(&quote.after),
     )).unwrap_or_default();
+    let preview_html = preview.map_or_else(String::new, |rendered| {
+        format!(r#"<section aria-labelledby="history-preview"><h2 id="history-preview">Просмотр редакции</h2><div class="document-text document-markdown">{}</div></section>"#, rendered.as_str())
+    });
     let content = format!(
         r#"{confirmation}{quote}
         <section aria-labelledby="history-cover"><h2 id="history-cover">Обложка</h2>{}</section>
+        {preview_html}
         <section aria-labelledby="history-markdown"><h2 id="history-markdown">Исходный Markdown</h2><p>Формат — {format}</p>{}</section>
         {attachments}"#,
         cover(links, snapshot),
         source_block(&snapshot.source)
     );
-    document(&heading, &header, &with_timeline(links, history, &content))
+    history_document(
+        &heading,
+        &header,
+        &with_timeline(links, history, &content),
+        preview.is_some(),
+    )
+}
+
+pub(crate) fn embed_preview(
+    links: &Links,
+    snapshot: &PageRevisionSnapshot,
+    origin: &str,
+) -> Option<RenderedMarkdown> {
+    if snapshot.format != PageContentFormat::Markdown || !snapshot.source.contains("sever-embed") {
+        return None;
+    }
+    let files: Vec<_> = snapshot
+        .attachments
+        .iter()
+        .cloned()
+        .map(|file| {
+            let url = links.attachment(snapshot.revision, file.id);
+            PageAttachmentView::at_url(file, url, true)
+        })
+        .collect();
+    let rendered = render_document(
+        &snapshot.source,
+        &|id, image| {
+            let file = files.iter().find(|file| file.id == id)?;
+            if image {
+                file.image_to.as_deref()
+            } else {
+                file.download_to.as_deref()
+            }
+        },
+        origin,
+    );
+    rendered.has_embeds().then_some(rendered)
 }
 
 fn restore_form(links: &Links, number: i64, base: i64, label: &str) -> String {
@@ -616,7 +655,7 @@ mod tests {
             items: Vec::new(),
             next_before: Some(3),
         };
-        let preview = super::snapshot(&links, &snapshot, &history, true, None);
+        let preview = super::snapshot(&links, &snapshot, &history, true, None, None);
         assert!(!preview.contains("name=\"baseRevision\""));
         assert!(!preview.contains("/restore"));
         assert!(preview.contains("&lt;snapshot&gt;"));
@@ -625,7 +664,7 @@ mod tests {
             quote: "<script>".to_owned(),
             after: " > B".to_owned(),
         };
-        let details = super::snapshot(&links, &snapshot, &history, false, Some(&quote));
+        let details = super::snapshot(&links, &snapshot, &history, false, Some(&quote), None);
         assert!(details.contains(r#"id="history-quote""#));
         assert!(
             details.contains("<blockquote>A &lt; <mark>&lt;script&gt;</mark> &gt; B</blockquote>")
@@ -642,7 +681,7 @@ mod tests {
         assert!(comparison.contains("?before=3&amp;preview=1\""));
 
         let reading = Links::new(Uuid::nil(), Uuid::nil(), Uuid::nil(), false);
-        let confirmation = super::snapshot(&reading, &snapshot, &history, true, None);
+        let confirmation = super::snapshot(&reading, &snapshot, &history, true, None, None);
         assert!(confirmation.contains(&format!("{}\">К текущей странице", reading.current)));
         assert!(confirmation.contains("name=\"baseRevision\" value=\"5\""));
         assert!(confirmation.contains("history-page-sidebar"));

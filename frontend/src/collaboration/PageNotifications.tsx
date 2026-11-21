@@ -39,7 +39,7 @@ export function PageNotifications() {
     setOpen(event.currentTarget.open);
     setOffset(0);
   }}>
-    <summary className="space-action space-secondary"><Icon name="bell" />Уведомления</summary>
+    <summary className="space-action space-secondary" aria-label="Уведомления" title="Уведомления"><Icon name="bell" /><span>Уведомления</span></summary>
     <div className="page-notifications-panel">
       <h2>Уведомления</h2>
       {!result && <p role="status">Загружаем уведомления…</p>}

@@ -14,6 +14,7 @@ use crate::{
 use super::{
     Attachment, AttachmentPatch, PageContentFormat, Store,
     coediting::{CoeditResult, current_coedit_draft, guard_coedit_publish, validate_coedit_lease},
+    external_sharing::PUBLIC_LINK_IS_ACTIVE,
     page_access::{PAGE_ACCESS, PageAddress, PageEditAccess, lock_page_for_edit},
     page_attachments::{
         CURRENT_ATTACHMENTS, apply_attachment_patch, decode_attachments, has_retired_attachments,
@@ -23,6 +24,8 @@ use super::{
 };
 
 pub(crate) struct PageText {
+    pub title: String,
+    pub template_revision: Option<String>,
     pub source: String,
     pub format: PageContentFormat,
     pub content_revision: i64,
@@ -30,6 +33,7 @@ pub(crate) struct PageText {
     pub can_manage: bool,
     pub can_browse_space: bool,
     pub effective_role: String,
+    pub public_link_active: bool,
     pub cover: PageCover,
     pub attachments: Vec<Attachment>,
 }
@@ -262,6 +266,8 @@ impl PageSaveReceipt {
 
 #[derive(FromRow)]
 struct PageTextRow {
+    title: Vec<u8>,
+    template_revision: Option<String>,
     source: String,
     is_markdown: bool,
     content_revision: i64,
@@ -269,6 +275,7 @@ struct PageTextRow {
     can_manage: bool,
     can_browse_space: bool,
     effective_role: String,
+    public_link_active: bool,
     theme: Option<String>,
     asset_id: Option<Uuid>,
     attachments: String,
@@ -279,8 +286,9 @@ async fn read(
     address: &PageAddress,
 ) -> Result<Option<PageText>, sqlx::Error> {
     let query = format!(
-        "SELECT p.markdown AS source, p.content_is_markdown AS is_markdown, p.content_revision,
+        "SELECT p.title, p.template_revision, p.markdown AS source, p.content_is_markdown AS is_markdown, p.content_revision,
                 access.can_edit, access.can_manage, access.can_browse_space, access.effective_role,
+                access.can_edit AND {PUBLIC_LINK_IS_ACTIVE} AS public_link_active,
                 c.theme, c.asset_id, {CURRENT_ATTACHMENTS} AS attachments
          FROM ({PAGE_ACCESS}) access
          JOIN pages p ON (p.tenant_id, p.space_id, p.id) = ($1, $2, $4)
@@ -296,6 +304,8 @@ async fn read(
         .await?;
     row.map(|row| {
         Ok(PageText {
+            title: super::sections::decode_title(row.title, "pages.title")?,
+            template_revision: row.template_revision,
             source: row.source,
             format: PageContentFormat::from_markdown(row.is_markdown),
             content_revision: row.content_revision,
@@ -303,6 +313,7 @@ async fn read(
             can_manage: row.can_manage,
             can_browse_space: row.can_browse_space,
             effective_role: row.effective_role,
+            public_link_active: row.public_link_active,
             cover: PageCover::from_storage(row.theme.as_deref(), row.asset_id),
             attachments: decode_attachments(&row.attachments)?,
         })

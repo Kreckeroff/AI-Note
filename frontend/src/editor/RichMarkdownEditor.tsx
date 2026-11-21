@@ -1,16 +1,19 @@
 import {useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type Ref} from 'react';
 import type {DraftEditKind, DraftHistoryDirection} from './draftHistory';
 import {
-  applyCommand, applySlashCommand, exitCodeBlock, insertVisual, moveListItem, removeVisual, toggleTask,
+  applyCommand, insertMenuBlock, exitCodeBlock, insertVisual, moveListItem, removeVisual, toggleTask,
   updateCodeLanguage, type EditorChange,
 } from './editorChanges';
 import {availableCommands, EditorCommandMenu, type MenuAction} from './EditorCommandMenu';
 import {
-  escapeLiteralText, isProtected, parseMarkdown, type EditorBlock, type EditorCommand, type MarkdownDocument, type SourceRange,
+  escapeLiteralText, inlineFormats, isProtected, parseMarkdown, selectionFormatting,
+  type EditorBlock, type EditorCommand, type MarkdownDocument, type SelectionFormatting, type SourceRange,
 } from './markdownModel';
 import {caretPlaceholder, protectedEdit, RichMarkdownBlocks} from './RichMarkdownBlocks';
 import {findSlashCommand, type SlashMatch} from './slashCommand';
 import type {PageAttachment} from './pageAttachments';
+import {BlockActionMenu} from './BlockActionMenu';
+import {changeTableStructure, type TablePosition} from './tableStructure';
 
 export type {EditorCommand} from './markdownModel';
 export {decodeLegacyText} from './markdownModel';
@@ -18,6 +21,7 @@ export {applySourceCommand} from './editorChanges';
 
 export type RichMarkdownEditorHandle = {
   apply(command: EditorCommand): void;
+  insertBlock(command: MenuAction, range: SourceRange): void;
   focus(): void;
   selection(): SourceRange;
   restoreSelection(range: SourceRange): void;
@@ -31,12 +35,16 @@ type EditorProps = {
   onHistory(direction: DraftHistoryDirection): void;
   onPasteMarkdown(range: SourceRange): void;
   onInsertAttachmentImage?: (range: SourceRange) => void;
+  onInsertEmbed(range: SourceRange): void;
+  onEditEmbed(block: EditorBlock, opener: HTMLElement): void;
+  onRemoveEmbed(block: EditorBlock): void;
   attachments: readonly PageAttachment[];
   readOnly: boolean;
   describedBy?: string;
   id?: string;
   ref?: Ref<RichMarkdownEditorHandle>;
   onCompositionChange?(active: boolean): void;
+  onFormattingChange(value: SelectionFormatting): void;
 };
 
 const runSelector = '[data-markdown-run]';
@@ -91,6 +99,19 @@ function selectedRange(root: HTMLElement, model: MarkdownDocument): SourceRange 
   return selection?.rangeCount ? sourceRange(root, model, selection.getRangeAt(0)) : undefined;
 }
 
+function selectedTableCell(root: HTMLElement): TablePosition | undefined {
+  const selected = root.ownerDocument.getSelection();
+  if (!selected?.rangeCount) return;
+  const range = selected.getRangeAt(0);
+  const cellFor = (node: Node) => (node instanceof Element ? node : node.parentElement)
+    ?.closest<HTMLTableCellElement>('th[data-markdown-cell-start], td[data-markdown-cell-start]');
+  const cell = cellFor(range.startContainer);
+  const table = cell?.closest<HTMLElement>('[data-markdown-table]');
+  const row = cell?.parentElement;
+  if (!cell || cell !== cellFor(range.endContainer) || !table || !root.contains(table) || !(row instanceof HTMLTableRowElement)) return;
+  return {tableStart:Number(table.dataset.markdownTable), row:row.rowIndex, column:cell.cellIndex};
+}
+
 function nearestPoint(root: HTMLElement, model: MarkdownDocument, source: number): {node: Node; offset: number} | undefined {
   let nearest: {node: Node; offset: number} | undefined;
   let distance = Infinity;
@@ -125,25 +146,40 @@ function selectSource(root: HTMLElement, model: MarkdownDocument, range: SourceR
 type InsertionKind = Parameters<typeof insertVisual>[4];
 
 export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPasteMarkdown, onInsertAttachmentImage,
-  attachments, readOnly, describedBy, id, ref, onCompositionChange}: EditorProps) {
+  onInsertEmbed, onEditEmbed, onRemoveEmbed, attachments, readOnly, describedBy, id, ref, onCompositionChange,
+  onFormattingChange}: EditorProps) {
   const editor = useRef<HTMLDivElement>(null);
   const selection = useRef<SourceRange | undefined>(undefined);
-  const pending = useRef<{change: EditorChange; refreshMenu: boolean} | undefined>(undefined);
+  const pending = useRef<{change: EditorChange; refreshMenu: boolean; revealCaret: boolean} | undefined>(undefined);
   const composition = useRef<{range: SourceRange; source: string; legacy: boolean} | undefined>(undefined);
   const committedComposition = useRef<string | undefined>(undefined);
   const typingMarks = useRef<Map<'bold' | 'italic', boolean>>(new Map());
+  const reportedFormatting = useRef<SelectionFormatting>(undefined);
   const [repair, setRepair] = useState(0);
   const [notice, setNotice] = useState('');
   const [menu, setMenu] = useState<(SlashMatch & {active: number}) | undefined>(undefined);
   const menuId = useId();
   const model = useMemo(() => parseMarkdown(source, legacy), [source, legacy]);
+  const [selectedCell, setSelectedCell] = useState<{position: TablePosition; model: MarkdownDocument}>();
+  const activeCell = selectedCell?.model === model ? selectedCell.position : undefined;
   const commands = menu ? availableCommands(menu.query, Boolean(onInsertAttachmentImage)) : [];
 
   function currentSelection(): SourceRange {
     return editor.current && selectedRange(editor.current, model) || selection.current || {start: 0, end: 0};
   }
 
-  function apply(change: EditorChange, before = currentSelection(), kind: DraftEditKind = 'atomic', refreshMenu = false) {
+  function reportFormatting(range: SourceRange) {
+    const next = selectionFormatting(model, range);
+    if (range.start === range.end) {
+      for (const [mark, active] of typingMarks.current) next[mark] = active;
+    }
+    if (inlineFormats.some(mark => next[mark] !== reportedFormatting.current?.[mark])) {
+      reportedFormatting.current = next;
+      onFormattingChange(next);
+    }
+  }
+
+  function apply(change: EditorChange, before = currentSelection(), kind: DraftEditKind = 'atomic', refreshMenu = false, revealCaret = false) {
     setNotice('');
     if (!refreshMenu) setMenu(undefined);
     if (source === change.source && legacy === change.legacy) {
@@ -152,7 +188,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       return;
     }
     selection.current = change;
-    pending.current = {change, refreshMenu};
+    pending.current = {change, refreshMenu, revealCaret};
     if (onChange(change,before,kind)===false) {
       pending.current=undefined;
       selection.current=before;
@@ -163,7 +199,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
   function focus() {
     const root = editor.current;
     if (!root) return;
-    root.focus();
+    root.focus({preventScroll:true});
     selectSource(root, model, selection.current ?? {start: 0, end: 0});
   }
 
@@ -176,12 +212,20 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
     focus();
   }
 
-  function selectCommand(command: MenuAction) {
-    if (!menu || readOnly) return;
+  function insertBlock(command: MenuAction, range: SourceRange, before: SourceRange) {
+    if (readOnly) return;
     setMenu(undefined);
-    if (command === 'paste-markdown') onPasteMarkdown(menu.range);
-    else if (command === 'attachment-image') onInsertAttachmentImage?.(menu.range);
-    else apply(applySlashCommand(source, legacy, menu.range, command), currentSelection());
+    if (command === 'paste-markdown') onPasteMarkdown(range);
+    else if (command === 'attachment-image') onInsertAttachmentImage?.(range);
+    else if (command === 'embed') onInsertEmbed(range);
+    else {
+      editor.current?.focus({preventScroll:true});
+      apply(insertMenuBlock(source, legacy, range, command), before, 'atomic', false, true);
+    }
+  }
+
+  function selectCommand(command: MenuAction) {
+    if (menu) insertBlock(command, menu.range, currentSelection());
   }
 
   function menuAnchor() {
@@ -219,8 +263,16 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
   }
 
   function handleKey(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'Escape' && (event.target as Element).closest('.markdown-table-tools') && selection.current) {
+      event.preventDefault();
+      restoreSelection(selection.current);
+      return;
+    }
     if (readOnly || event.nativeEvent.isComposing || !belongsToEditor(event.currentTarget, event.target)) return;
-    if (menu && event.key === 'Escape') {
+    if (activeCell && event.shiftKey && event.key === 'F10') {
+      const controls = event.currentTarget.querySelector<HTMLButtonElement>('.markdown-table-tools button');
+      if (controls) { event.preventDefault(); controls.focus(); }
+    } else if (menu && event.key === 'Escape') {
       setMenu(undefined);
       event.preventDefault();
     } else if (menu && commands.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
@@ -265,11 +317,12 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
         selection.current = range;
       }
       focus();
+      reportFormatting(selection.current);
       return;
     }
     typingMarks.current.clear();
     const result = applyCommand(source, legacy, range, command);
-    editor.current?.focus();
+    editor.current?.focus({preventScroll:true});
     if (result.source === source && (command === 'bold' || command === 'italic' || command === 'code')) {
       const selectedRuns = model.runs.filter(run => run.offsets[0] < range.end && range.start < run.offsets.at(-1)!);
       if (selectedRuns.some(run => !run.marks.some(mark => mark.kind === 'code'))) setNotice(structuralEdit);
@@ -281,6 +334,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
 
   useImperativeHandle(ref, () => ({
     apply: runCommand, focus, restoreSelection, selection: currentSelection,
+    insertBlock(command, range) { insertBlock(command, {start:range.end, end:range.end}, range); },
     selectedText() {
       const root = editor.current;
       return root && selectedRange(root, model) ? root.ownerDocument.getSelection()?.toString().replaceAll(caretPlaceholder, '') ?? '' : '';
@@ -295,6 +349,12 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       if (root.ownerDocument.activeElement !== root) return;
       const next = operation.change;
       selectSource(root, model, next);
+      if (operation.revealCaret) {
+        const target = root.ownerDocument.getSelection()?.focusNode?.parentElement;
+        if (target && root.contains(target)) {
+          (target.closest('[data-markdown-cell-start]') ?? target).scrollIntoView({block:'nearest',inline:'nearest'});
+        }
+      }
       if (operation.refreshMenu && next.start === next.end) {
         const block = model.blocks.find(item => item.bodyStart <= next.end && next.end <= item.end);
         const match = block && !block.locked && block.kind !== 'fence' && block.kind !== 'table' &&
@@ -315,6 +375,12 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
         if (previous && (previous.start !== current.start || previous.end !== current.end)) typingMarks.current.clear();
         if (menu && (current.start !== menu.range.end || current.end !== menu.range.end)) setMenu(undefined);
         selection.current = current;
+        reportFormatting(current);
+        const cell = selectedTableCell(root!);
+        if (!cell && selectedCell) setSelectedCell(undefined);
+        else if (cell && (activeCell?.tableStart !== cell.tableStart || activeCell.row !== cell.row || activeCell.column !== cell.column)) {
+          setSelectedCell({model, position:cell});
+        }
       }
     }
 
@@ -426,6 +492,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
     root.addEventListener('compositionstart', compositionStart);
     root.addEventListener('compositionend', compositionEnd);
     root.ownerDocument.addEventListener('selectionchange', rememberSelection);
+    rememberSelection();
     return () => {
       root.removeEventListener('beforeinput', beforeInput);
       root.removeEventListener('paste', paste);
@@ -438,6 +505,7 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
   });
 
   return <>
+    <div className="page-block-workarea">
     <div
       ref={editor}
       id={id}
@@ -447,6 +515,8 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       role="textbox"
       tabIndex={readOnly ? 0 : undefined}
       aria-label="Содержимое страницы"
+      aria-placeholder={readOnly ? undefined : 'Начните писать или нажмите /'}
+      data-empty={!source && !readOnly ? '' : undefined}
       aria-multiline="true"
       aria-readonly={readOnly || undefined}
       aria-describedby={describedBy}
@@ -458,6 +528,16 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
       onBlur={event => { if (event.target === event.currentTarget) setMenu(undefined); }}
     ><div key={repair}>
       <RichMarkdownBlocks model={model} readOnly={readOnly} attachments={attachments}
+        onEditEmbed={onEditEmbed} onRemoveEmbed={onRemoveEmbed}
+        activeCell={readOnly ? undefined : activeCell}
+        onTableChange={(at, operation) => {
+          if (readOnly || !activeCell || activeCell !== at || composition.current) return;
+          const result = changeTableStructure(source, at, operation);
+          if (!result) return;
+          const before = selection.current ?? {start:result.start,end:result.end};
+          editor.current?.focus({preventScroll:true});
+          apply(result, before, 'atomic', false, true);
+        }}
         onRemoveImage={({start, end}) => {
           editor.current?.focus();
           apply({source:source.slice(0,start) + source.slice(end), legacy, start, end:start}, currentSelection());
@@ -472,6 +552,15 @@ export function RichMarkdownEditor({source, legacy, onChange, onHistory, onPaste
         }}
         onExitCode={block => leaveCode(blockCaret(block))} />
     </div></div>
+    {!readOnly && source && <BlockActionMenu editor={editor} model={model} source={source} legacy={legacy}
+      onRefocus={position => restoreSelection({start:position,end:position})}
+      onChange={change => {
+        if (composition.current) return;
+        const before = currentSelection();
+        editor.current?.focus({preventScroll:true});
+        apply(change,before,'atomic',false,true);
+      }} />}
+    </div>
     {menu && <EditorCommandMenu id={menuId} entries={commands} current={menu.active} anchor={menuAnchor} onSelect={selectCommand} />}
     {notice && <p className="page-rich-notice" role="status">{notice}</p>}
   </>;

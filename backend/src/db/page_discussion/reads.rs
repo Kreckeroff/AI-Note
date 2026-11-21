@@ -209,6 +209,7 @@ impl Store {
     pub(crate) async fn discussion_threads(
         &self,
         address: &PageAddress,
+        origin: &str,
         query: ThreadQuery,
     ) -> Result<Option<DiscussionPage>, sqlx::Error> {
         // Every list projection, including replies and anchor relocation,
@@ -272,7 +273,7 @@ impl Store {
             .iter()
             .any(|row| row.anchor_revision.is_some_and(|origin| origin != revision))
         {
-            Some(published_text(&mut tx, address).await?)
+            Some(published_text(&mut tx, address, origin).await?)
         } else {
             None
         };
@@ -352,7 +353,7 @@ impl Store {
                  UNION
                  SELECT account_id FROM tenant_memberships WHERE tenant_id = $1 AND role IN ('admin', 'superadmin') AND status = 'active'
                  UNION
-                 SELECT account_id FROM space_grants WHERE (tenant_id, space_id) = ($1, $2)
+                 SELECT account_id FROM effective_space_grants WHERE (tenant_id, space_id) = ($1, $2)
                  UNION
                  SELECT account_id FROM page_grants WHERE (tenant_id, space_id, page_id) = ($1, $2, $3)
              )

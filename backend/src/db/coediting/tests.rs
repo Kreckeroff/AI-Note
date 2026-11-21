@@ -121,6 +121,181 @@ fn command(snapshot: &DraftSnapshot, start: usize, end: usize, text: &str) -> Dr
 
 #[sqlx::test]
 #[ignore = "requires isolated PostgreSQL"]
+async fn rename_creates_title_revisions_and_keeps_shared_work(pool: PgPool) -> anyhow::Result<()> {
+    use crate::db::{PageCover, page_rename::RenamePage};
+
+    let f = Fixture::seed(&pool).await?;
+    let owner = saved(f.store.open_coedit(&f.owner, &OWNER_SESSION).await?);
+    let other_section: Uuid = sqlx::query_scalar(
+        "SELECT section_id FROM pages WHERE (tenant_id, space_id, id) = ($1, $2, $3)",
+    )
+    .bind(f.owner.tenant)
+    .bind(f.owner.space)
+    .bind(f.owner.page)
+    .fetch_one(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO pages (tenant_id, space_id, section_id, id, creator_account_id, title, title_key, position)
+         VALUES ($1,$2,$3,$4,$5,'Occupied','occupied',2)",
+    )
+    .bind(f.owner.tenant)
+    .bind(f.owner.space)
+    .bind(other_section)
+    .bind(Uuid::new_v4())
+    .bind(f.owner.account)
+    .execute(&pool)
+    .await?;
+    let cover = Uuid::new_v4();
+    let attachment = Uuid::new_v4();
+    sqlx::query(
+        "WITH image AS (
+            INSERT INTO page_cover_assets (tenant_id, space_id, page_id, id, uploader_account_id, jpeg, published_at)
+            VALUES ($1,$2,$3,$5,$4,'jpeg-fixture',clock_timestamp()) RETURNING id
+         ), cover AS (
+            INSERT INTO page_covers (tenant_id, space_id, page_id, asset_id)
+            SELECT $1,$2,$3,id FROM image
+         ), file AS (
+            INSERT INTO page_attachment_assets (tenant_id, space_id, page_id, id, uploader_account_id, draft_id,
+                                                name, byte_length, bytes, fingerprint, published_at)
+            VALUES ($1,$2,$3,$6,$4,gen_random_uuid(),'file.md',1,'a',decode(repeat('00',32),'hex'),clock_timestamp())
+            RETURNING id
+         ) INSERT INTO page_attachments (tenant_id, space_id, page_id, asset_id) SELECT $1,$2,$3,id FROM file",
+    )
+    .bind(f.owner.tenant)
+    .bind(f.owner.space)
+    .bind(f.owner.page)
+    .bind(f.owner.account)
+    .bind(cover)
+    .bind(attachment)
+    .execute(&pool)
+    .await?;
+    assert!(matches!(
+        f.store.rename_page(&f.reader, 1, "No").await?,
+        RenamePage::Forbidden
+    ));
+    assert!(matches!(
+        f.store.rename_page(&f.owner, 1, " occupied ").await?,
+        RenamePage::Duplicate
+    ));
+    assert!(matches!(
+        f.store.rename_page(&f.owner, 1, "\n").await?,
+        RenamePage::InvalidName
+    ));
+    let foreign = PageAddress {
+        tenant: Uuid::new_v4(),
+        ..f.owner
+    };
+    assert!(matches!(
+        f.store.rename_page(&foreign, 1, "No").await?,
+        RenamePage::Missing
+    ));
+
+    let draft = saved(
+        f.store
+            .apply_coedit(&f.owner, &OWNER_SESSION, command(&owner, 0, 0, "draft "))
+            .await?,
+    );
+    let (a, b) = tokio::join!(
+        f.store.rename_page(&f.owner, 1, " Owner rename "),
+        f.store.rename_page(&f.guest, 1, " Guest rename "),
+    );
+    let (published, stale) = match (a?, b?) {
+        (RenamePage::Named(a), RenamePage::Stale(b))
+        | (RenamePage::Stale(b), RenamePage::Named(a)) => (a, b),
+        _ => panic!("expected exactly one rename and a stale response"),
+    };
+    assert_eq!(published.revision, 2);
+    assert_eq!((stale.title, stale.revision), (published.title.clone(), 2));
+    let tree = f
+        .store
+        .sections(f.owner.tenant, f.owner.space, f.owner.account)
+        .await?
+        .unwrap();
+    let named = tree
+        .pages
+        .iter()
+        .find(|page| page.id == f.owner.page)
+        .unwrap();
+    assert_eq!(named.title, published.title);
+    assert!(named.can_edit);
+    let viewer_tree = f
+        .store
+        .sections(f.reader.tenant, f.reader.space, f.reader.account)
+        .await?
+        .unwrap();
+    assert!(viewer_tree.pages.iter().all(|page| !page.can_edit));
+    let old = f.store.page_revision(&f.owner, 1).await?.unwrap();
+    let new = f.store.page_revision(&f.owner, 2).await?.unwrap();
+    assert_eq!(old.title, "page");
+    assert_eq!(new.title, published.title);
+    assert_eq!(new.source, old.source);
+    assert_eq!(new.format, old.format);
+    assert_eq!(old.cover, PageCover::Image(cover));
+    assert_eq!(new.cover, old.cover);
+    assert_eq!(old.attachments.len(), 1);
+    assert_eq!(old.attachments[0].id, attachment);
+    assert_eq!(new.attachments, old.attachments);
+    assert!(matches!(
+        f.store.rename_page(&f.owner, 1, &published.title).await?,
+        RenamePage::Named(name) if name.revision == 2
+    ));
+    let shared = saved(
+        f.store
+            .coedit_state(&f.owner, &OWNER_SESSION, draft.lease)
+            .await?,
+    );
+    assert_eq!(shared.source, draft.source);
+    assert_eq!(shared.format, draft.format);
+    assert_eq!(shared.published_revision, 2);
+    let later = saved(
+        f.store
+            .apply_coedit(&f.owner, &OWNER_SESSION, command(&draft, 0, 0, "queued "))
+            .await?,
+    );
+    assert_eq!(later.source, "queued draft abc123xyz");
+    assert!(matches!(
+        f.store.rename_page(&f.guest, 2, "Гостевая правка").await?,
+        RenamePage::Named(name) if name.revision == 3 && name.title == "Гостевая правка"
+    ));
+    Ok(())
+}
+
+#[sqlx::test]
+#[ignore = "requires isolated PostgreSQL"]
+async fn rename_preserves_a_conflict_even_if_the_draft_equals_the_published_text(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::db::page_rename::RenamePage;
+
+    let f = Fixture::seed(&pool).await?;
+    let owner = saved(f.store.open_coedit(&f.owner, &OWNER_SESSION).await?);
+    sqlx::query(
+        "UPDATE page_coedit_drafts SET conflict_start=0, conflict_end=3, conflict_mine='offline'
+         WHERE (tenant_id, space_id, page_id) = ($1, $2, $3)",
+    )
+    .bind(f.owner.tenant)
+    .bind(f.owner.space)
+    .bind(f.owner.page)
+    .execute(&pool)
+    .await?;
+
+    assert!(matches!(
+        f.store.rename_page(&f.owner, 1, "Renamed").await?,
+        RenamePage::Named(_)
+    ));
+    let state = f
+        .store
+        .coedit_state(&f.owner, &OWNER_SESSION, owner.lease)
+        .await?;
+    assert!(
+        matches!(state, CoeditResult::Conflict(state) if state.persistent && state.snapshot.published_revision == 2
+        && state.snapshot.source == owner.source && state.mine == "offline" && state.theirs == "abc")
+    );
+    Ok(())
+}
+
+#[sqlx::test]
+#[ignore = "requires isolated PostgreSQL"]
 async fn independent_editors_converge_and_idempotently_replay(pool: PgPool) -> anyhow::Result<()> {
     let f = Fixture::seed(&pool).await?;
     let owner = saved(f.store.open_coedit(&f.owner, &OWNER_SESSION).await?);

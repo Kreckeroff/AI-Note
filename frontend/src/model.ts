@@ -40,6 +40,7 @@ export interface CatalogModel {
 export interface WorkspaceModel {
   tenant: Tenant;
   tenants: TenantLink[];
+  accountId: string;
   accountName: string;
   availableSpaces: Space[];
   catalog: CatalogModel;
@@ -47,16 +48,21 @@ export interface WorkspaceModel {
 
 export interface Section {
   id: string;
+  parentId?: string | null;
   title: string;
 }
 
 export interface DocumentPage {
   id: string;
   sectionId: string;
+  parentId?: string | null;
   title: string;
+  canEdit?: boolean;
 }
 
 export interface DocumentFormModel {
+  selectedTemplate?: string;
+  templates?: {key: string; title: string; source: string}[];
   operationId: string;
   title: string;
   error: string;
@@ -67,6 +73,7 @@ export interface DocumentFormModel {
 }
 
 export interface PageReadingModel {
+  template?: {title: string; revision: number; source: string};
   revision?: string;
   text: string;
   editTo: string | null;
@@ -74,6 +81,13 @@ export interface PageReadingModel {
   cover?: CoverView | null;
   historyTo?: string | null;
   attachments?: PageAttachment[];
+  related?: RelatedDocument[];
+}
+
+export interface RelatedDocument {
+  title: string;
+  path: string;
+  taskLabel?: string;
 }
 
 interface PageRevision {
@@ -96,6 +110,7 @@ export interface PageEditorForm extends PageRevision {
   error: string | null;
   conflict: PageEditConflict | null;
   canSave: boolean;
+  publicLinkActive?: boolean;
   coeditRetry?: {lease: string; version: string; operation: string} | null;
   coverBase?: CoverValue | null;
   coverChanged?: boolean;
@@ -202,16 +217,17 @@ function isCatalog(value: unknown): boolean {
 
 function isWorkspace(value: unknown): boolean {
   return fields(value) && isTenantLink(value.tenant) && isRole(value.tenant.role) &&
-    typeof value.tenant.canCreate === 'boolean' && strings(value, 'accountName') &&
+    typeof value.tenant.canCreate === 'boolean' && hasUuid(value.accountId) && strings(value, 'accountName') &&
     isList(value.tenants, isTenantLink) && isList(value.availableSpaces, isSpace) && isCatalog(value.catalog);
 }
 
 function isSection(value: unknown): boolean {
-  return fields(value) && hasUuid(value.id) && strings(value, 'title');
+  return fields(value) && hasUuid(value.id) && (value.parentId == null || hasUuid(value.parentId)) && strings(value, 'title');
 }
 
 function isDocumentPage(value: unknown): boolean {
-  return fields(value) && hasUuid(value.id) && hasUuid(value.sectionId) && strings(value, 'title');
+  return fields(value) && hasUuid(value.id) && hasUuid(value.sectionId) && (value.parentId == null || hasUuid(value.parentId)) &&
+    (value.canEdit === undefined || typeof value.canEdit === 'boolean') && strings(value, 'title');
 }
 
 function isWorkspacePath(value: unknown): boolean {
@@ -220,17 +236,24 @@ function isWorkspacePath(value: unknown): boolean {
 
 function isDocumentForm(value: unknown): boolean {
   return fields(value) && hasUuid(value.operationId) && strings(value, 'title', 'error') &&
+    (value.selectedTemplate === undefined || typeof value.selectedTemplate === 'string') &&
+    (value.templates === undefined || isList(value.templates, item => fields(item) && strings(item, 'key', 'title', 'source'))) &&
     typeof value.invalidName === 'boolean' && isWorkspacePath(value.cancelTo) &&
     isWorkspacePath(value.action) && (value.retryTo === null || isWorkspacePath(value.retryTo));
 }
 
 function isPageReading(value: unknown): boolean {
   return fields(value) && strings(value, 'text') &&
+    (value.template === undefined || fields(value.template) && strings(value.template, 'title', 'source') &&
+      typeof value.template.revision === 'number') &&
     (value.revision == null || typeof value.revision === 'string' && /^[0-9]{1,19}$/u.test(value.revision)) &&
     (value.renderedHtml === null || typeof value.renderedHtml === 'string') &&
     (value.editTo === null || isWorkspacePath(value.editTo)) && isOptionalCover(value.cover) &&
     (value.historyTo == null || isPageHistoryPath(value.historyTo)) &&
-    (value.attachments === undefined || isList(value.attachments, isPageAttachment));
+    (value.attachments === undefined || isList(value.attachments, isPageAttachment)) &&
+    (value.related === undefined || isList(value.related, item => fields(item) && strings(item, 'title') &&
+      (item.taskLabel === undefined ? isPageAddress(item.path) : typeof item.taskLabel === 'string' &&
+        typeof item.path === 'string' && isPageAddress(item.path.replace('/tasks/', '/pages/')))));
 }
 
 function isPageRevision(value: unknown): value is Fields {
@@ -253,6 +276,7 @@ function isPageEditorForm(value: unknown): boolean {
     (value.cancelTo === null || isWorkspacePath(value.cancelTo)) &&
     (value.error === null || typeof value.error === 'string') &&
     (value.conflict === null || isPageConflict(value.conflict)) && typeof value.canSave === 'boolean' &&
+    (value.publicLinkActive === undefined || typeof value.publicLinkActive === 'boolean') &&
     (value.coeditRetry == null || fields(value.coeditRetry) &&
       isAttachmentId(value.coeditRetry.lease) && isAttachmentId(value.coeditRetry.operation) &&
       typeof value.coeditRetry.version === 'string' && /^(0|[1-9]\d{0,18})$/u.test(value.coeditRetry.version)) &&

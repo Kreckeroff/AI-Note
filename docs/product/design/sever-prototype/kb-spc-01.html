@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Север · Создание пространства</title>
+  <link rel="stylesheet" href="workspace.css">
+  <style>
+    body { --error-ink: #ffb4ab; }
+    body[data-theme=light] { --error-ink: #8f3434; }
+    .review-bar, .product-header { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 10px clamp(16px, 4vw, 48px); }
+    .review-bar { border-bottom: 1px solid var(--line); background: var(--raised); color: var(--muted); font-size: 12px; }
+    .review-controls, .actor, .brand, .space-flags, .environment { display: flex; align-items: center; gap: 8px; }
+    .review-controls { flex-wrap: wrap; }
+    .review-controls select { width: auto; min-height: 34px; padding: 4px 8px; font-size: 12px; }
+    .product-header { min-height: 64px; border-bottom: 1px solid var(--line); background: var(--surface); }
+    .brand { color: var(--ink); text-decoration: none; font-size: 15px; font-weight: 680; }
+    .environment { min-width: 0; }
+    .tenant-name { min-width: 0; padding-inline-start: 10px; border-inline-start: 1px solid var(--line); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .actor { color: var(--muted); font-size: 13px; }
+    .shell { width: min(100%, 1040px); margin-inline: auto; padding: clamp(36px, 8vw, 98px) clamp(16px, 5vw, 42px) 48px; }
+    .overview, .space-heading { display: grid; align-items: center; gap: 18px; }
+    .overview { grid-template-columns: minmax(0, 1fr) auto; }
+    .space-heading { grid-template-columns: 56px minmax(0, 1fr); }
+    h1 { font-size: clamp(27px, 6vw, 39px); font-weight: 670; line-height: 1.15; letter-spacing: -.035em; overflow-wrap: anywhere; }
+    .summary { color: var(--muted); margin-top: 8px; }
+    .space-flags { flex-wrap: wrap; margin-top: 10px; }
+    .tag { min-height: 23px; }
+    .tag svg { color: var(--accent); }
+    .space-icon { display: grid; flex: none; place-items: center; width: 56px; height: 56px; border-radius: 12px; background: var(--selected); color: var(--accent); }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin-bottom: 16px; text-decoration: none; color: var(--muted); }
+    .back-link:hover { color: var(--ink); }
+    .empty-space { margin-top: 28px; min-height: 230px; padding: 30px 18px; display: grid; place-items: center; text-align: center; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    .empty-space > div { display: grid; place-items: center; gap: 14px; }
+    .empty-space h2 { font-size: 16px; font-weight: 600; }
+    .denied { max-width: 580px; }
+    .denied .space-icon { margin-bottom: 20px; }
+    .denied .btn { margin-top: 22px; text-decoration: none; }
+    .shell .btn, #panel .btn { min-height: 44px; padding-inline: 14px; font-size: 14px; }
+    #panel { width: min(100% - 28px, 500px); }
+    #panel .dialog-header { padding: 15px 18px 15px 22px; }
+    #panel .dialog-header h2 { font-size: 21px; }
+    .dialog-tenant { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: var(--muted); font-size: 13px; }
+    .dialog-tenant > span:first-child { display: inline-flex; color: var(--accent); }
+    #panel .dialog-header .btn { min-height: 36px; padding: 0; }
+    #panel .dialog-body { padding: 20px 22px 22px; }
+    #panel .dialog-field { margin-bottom: 8px; color: var(--ink); font-size: 13px; font-weight: 620; }
+    #space-name { min-height: 46px; font-size: 16px; }
+    #space-name[aria-invalid=true] { border-color: var(--error-ink); }
+    .field-help, .form-error { margin-top: 8px; font-size: 13px; }
+    .field-help { color: var(--muted); }
+    .form-error { color: var(--error-ink); }
+    .access-note { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--muted); font-size: 13px; }
+    .access-note svg { flex: none; margin-top: 2px; color: var(--accent); }
+    .access-note strong { display: block; margin-bottom: 2px; color: var(--ink); font-weight: 620; }
+    #panel .dialog-buttons { margin-top: 20px; }
+    @media (max-width: 560px) {
+      .review-bar { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .review-controls { gap: 6px; }
+      .review-controls select { max-width: 100%; }
+      .overview { grid-template-columns: minmax(0, 1fr); justify-items: start; }
+      .product-header { min-height: 56px; }
+      .space-heading { grid-template-columns: minmax(0, 1fr); }
+      #panel .dialog-header, #panel .dialog-body { padding-inline: 16px; }
+    }
+    @media (max-width: 420px) {
+      .product-header { gap: 8px; }
+      .brand, .tenant-name, .actor { font-size: 12px; }
+      .actor .avatar { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <aside class="review-bar" aria-label="Управление макетом">
+    <strong>Макет KB-SPC-01 · 1.0</strong>
+    <div class="review-controls">
+      <label for="scenario">Сценарий</label>
+      <select class="field" id="scenario">
+        <option value="creator">Участник с правом создания</option>
+        <option value="standalone">Основатель личной среды</option>
+        <option value="member">Участник без права создания</option>
+        <option value="admin">Администратор той же среды</option>
+        <option value="otherAdmin">Администратор другой среды</option>
+        <option value="failure">Сбой создания</option>
+      </select>
+      <a class="btn" id="open-sample" href="#space/team-docs">Открыть пример</a>
+      <button class="btn" id="theme" type="button">Светлая тема</button>
+    </div>
+  </aside>
+  <header class="product-header">
+    <div class="environment"><a class="brand" href="#home"><span class="brand-mark" data-icon="north"></span>Север</a><span class="tenant-name" id="tenant-name"></span></div>
+    <div class="actor"><span class="avatar" id="actor-initials" aria-hidden="true"></span><span id="actor-name"></span></div>
+  </header>
+  <main class="shell" id="main">
+    <section id="start" aria-labelledby="start-title">
+      <div class="overview">
+        <div><h1 id="start-title" tabindex="-1">Рабочая область</h1><p class="summary" id="start-summary">Пространства для работы с документами команды.</p></div>
+        <button class="btn primary" id="open-create" type="button"><span data-icon="plus"></span>Создать пространство</button>
+      </div>
+    </section>
+    <section id="space" aria-labelledby="space-title" hidden>
+      <a class="back-link" href="#home"><span data-icon="left"></span>Рабочая область</a>
+      <div class="space-heading">
+        <div class="space-icon" data-icon="folder" data-size="26"></div>
+        <div>
+          <h1 id="space-title" tabindex="-1"></h1>
+          <div class="space-flags"><span class="tag"><span data-icon="lock" data-size="13"></span>Закрытое</span><span class="tag" id="space-role"></span></div>
+        </div>
+      </div>
+      <div class="empty-space"><div><span class="space-icon" data-icon="layers" data-size="25"></span><h2>В пространстве пока нет разделов</h2></div></div>
+    </section>
+    <section class="denied" id="denied" aria-labelledby="denied-title" hidden>
+      <div class="space-icon" data-icon="lock" data-size="24"></div>
+      <h1 id="denied-title" tabindex="-1">Пространство не найдено</h1>
+      <p class="summary">Проверьте адрес или вернитесь в рабочую область.</p>
+      <a class="btn" href="#home"><span data-icon="left"></span>К рабочей области</a>
+    </section>
+  </main>
+  <dialog id="panel" aria-labelledby="dialog-title">
+    <header class="dialog-header">
+      <div><h2 id="dialog-title">Новое пространство</h2><p class="dialog-tenant"><span data-icon="home" data-size="14"></span><span id="dialog-tenant-name"></span></p></div>
+      <button class="btn icon ghost" id="close-create" type="button" aria-label="Закрыть" data-icon="close"></button>
+    </header>
+    <form class="dialog-body" id="create-form" novalidate>
+      <label class="dialog-field" for="space-name">Название</label>
+      <input class="field" id="space-name" name="name" placeholder="Например, Команда продукта" aria-required="true" aria-describedby="space-help space-error" autofocus>
+      <p class="field-help" id="space-help">От 1 до 100 символов. Выберите уникальное имя среди своих пространств в этой среде.</p>
+      <p class="form-error" id="space-error" role="alert" hidden></p>
+      <div class="access-note"><span data-icon="lock"></span><p><strong>Закрытое пространство</strong><span id="access-description">Вы станете владельцем. Администраторы организации смогут просматривать содержимое.</span></p></div>
+      <div class="dialog-buttons">
+        <button class="btn" id="cancel-create" type="button">Отмена</button>
+        <button class="btn primary" id="submit-create" type="submit">Создать</button>
+      </div>
+    </form>
+  </dialog>
+  <script type="module">
+    import {icon} from './ui.mjs';
+
+    const get = (id) => document.getElementById(id);
+    document.querySelectorAll('[data-icon]').forEach((element) => {
+      element.innerHTML = icon(element.dataset.icon, Number(element.dataset.size ?? 16));
+    });
+
+    const roles = {
+      creator: {id: 'maria', person: 'Мария Ким', initials: 'МК', canCreate: true},
+      standalone: {id: 'maria', person: 'Мария Ким', initials: 'МК', canCreate: true, tenant: 'standalone'},
+      member: {id: 'alexey', person: 'Алексей Орлов', initials: 'АО'},
+      admin: {id: 'irina', person: 'Ирина Волкова', initials: 'ИВ', admin: true},
+      otherAdmin: {id: 'elena', person: 'Елена Белова', initials: 'ЕБ', admin: true, canCreate: true, tenant: 'partner'},
+      failure: {id: 'maria', person: 'Мария Ким', initials: 'МК', canCreate: true},
+    };
+    const tenantNames = {organization: 'Студия «Контур»', standalone: 'Моя среда', partner: 'Команда «Вектор»'};
+    const samples = {
+      organization: {id: 'team-docs', name: 'Документы команды', owner: 'maria', scope: 'organization'},
+      standalone: {id: 'personal-docs', name: 'Личные материалы', owner: 'maria', scope: 'standalone'},
+      partner: {id: 'partner-docs', name: 'Материалы команды «Вектор»', owner: 'elena', scope: 'partner'},
+    };
+    const storageKey = 'sever-kb-spc-01-review-v1';
+    const panel = get('panel');
+    const form = get('create-form');
+    const input = get('space-name');
+    const error = get('space-error');
+    const scenario = get('scenario');
+    const requestedScenario = new URLSearchParams(location.search).get('scenario');
+    if (Object.hasOwn(roles, requestedScenario)) scenario.value = requestedScenario;
+    const create = get('open-create');
+    const submit = get('submit-create');
+    let savedSpaces = [];
+    try {
+      const stored = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
+      if (Array.isArray(stored)) savedSpaces = stored;
+    } catch {
+      // The example remains available when browser storage is unavailable.
+    }
+    let failNext = scenario.value === 'failure';
+    let saving = false;
+    let returnFocus = create;
+    const role = () => roles[scenario.value];
+    const scope = () => role().tenant ?? 'organization';
+    const ownerOf = (space) => space.owner ?? 'maria';
+    const visibleSpaces = () => [samples[scope()], ...savedSpaces.filter((space) => (space.scope ?? 'organization') === scope())];
+    const normalize = (name) => name.normalize('NFC').toLowerCase().normalize('NFC');
+
+    function showError(message, field = false) {
+      error.textContent = message;
+      error.hidden = !message;
+      if (field) input.setAttribute('aria-invalid', 'true');
+      else input.removeAttribute('aria-invalid');
+      if (field) input.focus();
+    }
+
+    function setSaving(value) {
+      saving = value;
+      form.setAttribute('aria-busy', String(value));
+      input.readOnly = value;
+      [submit, get('close-create'), get('cancel-create')].forEach((button) => { button.disabled = value; });
+      submit.textContent = value ? 'Создаём…' : 'Создать';
+    }
+
+    function openCreate() {
+      if (panel.open || !role().canCreate) return;
+      returnFocus = document.activeElement === create ? create : get('start-title');
+      form.reset();
+      showError('');
+      get('dialog-tenant-name').textContent = tenantNames[scope()];
+      get('access-description').textContent = scope() === 'standalone'
+        ? 'Вы станете владельцем.'
+        : 'Вы станете владельцем. Администраторы этой среды смогут просматривать содержимое.';
+      panel.showModal();
+    }
+
+    function render(moveFocus = true) {
+      const actor = role();
+      get('actor-name').textContent = actor.person;
+      get('actor-initials').textContent = actor.initials;
+      get('tenant-name').textContent = tenantNames[scope()];
+      get('start-summary').textContent = scope() === 'standalone' ? 'Ваше место для работы с документами.' : 'Пространства для работы с документами команды.';
+      create.hidden = !actor.canCreate;
+      const sample = scenario.value === 'otherAdmin' ? samples.organization : samples[scope()];
+      const sampleLink = get('open-sample');
+      sampleLink.href = '#space/' + sample.id;
+      sampleLink.textContent = scenario.value === 'otherAdmin' ? 'Пример из другой среды' : 'Открыть пример';
+      const [, id] = location.hash.match(/^#space\/(.+)$/) ?? [];
+      const selected = visibleSpaces().find((space) => space.id === id);
+      const owner = selected && ownerOf(selected) === actor.id;
+      const canOpen = Boolean(selected && (owner || actor.admin));
+      get('start').hidden = Boolean(id);
+      get('space').hidden = !canOpen;
+      get('denied').hidden = !id || canOpen;
+      get('space-title').textContent = canOpen ? selected.name : '';
+      get('space-role').textContent = owner ? 'Владелец' : 'Просмотр по роли администратора';
+      if (moveFocus) get(id ? (canOpen ? 'space-title' : 'denied-title') : 'start-title').focus();
+      if (location.hash === '#new') openCreate();
+    }
+
+    scenario.addEventListener('change', () => {
+      failNext = scenario.value === 'failure';
+      render(false);
+    });
+    create.addEventListener('click', openCreate);
+    get('close-create').addEventListener('click', () => panel.close());
+    get('cancel-create').addEventListener('click', () => panel.close());
+    panel.addEventListener('cancel', (event) => { if (saving) event.preventDefault(); });
+    panel.addEventListener('close', () => {
+      if (location.hash === '#new') history.replaceState(null, '', '#home');
+      if (!get('start').hidden) returnFocus.focus();
+    });
+    input.addEventListener('input', () => { if (!error.hidden) showError(''); });
+    get('theme').addEventListener('click', (event) => {
+      const light = document.body.dataset.theme !== 'light';
+      document.body.dataset.theme = light ? 'light' : 'dark';
+      event.currentTarget.textContent = light ? 'Тёмная тема' : 'Светлая тема';
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (saving || !role().canCreate) return;
+      const name = input.value.trim();
+      if (!name) return showError('Введите название пространства.', true);
+      if (Array.from(name).length > 100) return showError('Сократите название до 100 символов.', true);
+      if (visibleSpaces().some((space) => ownerOf(space) === role().id && normalize(space.name) === normalize(name))) {
+        return showError('У вас уже есть пространство с таким названием.', true);
+      }
+      showError('');
+      setSaving(true);
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      if (failNext) {
+        failNext = false;
+        setSaving(false);
+        showError('Не удалось создать пространство. Повторите попытку.');
+        submit.focus();
+        return;
+      }
+      const space = {id: crypto.randomUUID(), name, owner: role().id, scope: scope()};
+      const updated = [...savedSpaces, space];
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+      } catch {
+        setSaving(false);
+        showError('Не удалось сохранить пространство. Повторите попытку.');
+        submit.focus();
+        return;
+      }
+      savedSpaces = updated;
+      setSaving(false);
+      location.hash = 'space/' + space.id;
+      panel.close();
+    });
+
+    window.addEventListener('hashchange', () => render());
+    render(false);
+  </script>
+</body>
+</html>

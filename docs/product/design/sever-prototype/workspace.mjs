@@ -1,13 +1,15 @@
-import {accessFor, accountForEmail, addTask, availableSpaces, canComment, canManageTask, canWrite, coverFor, coverStyles, createSpace, documentById, invitesEnabled,
-  loadWorkspace, markdownLimit, memberRole, newItem, ownsSpace, pageTrail, persistSession, persistWorkspace, profileFor, roles, savePage,
-  sharedPage, signUp, spaceInfo, taskAssignees, taskById, taskStatuses, workspaceStorageKey} from './model.mjs';
+import {accessFor, accountForEmail, addTask, availableSpaces, availableTenants, availableTenantSpaces, canComment, canManageTask, canWrite, coverFor, coverStyles,
+  createSpace, demoOrganizationId, demoOrganizationName, demoSpaceNameError, documentById, invitesEnabled, loadWorkspace as readWorkspace, markdownLimit, memberRole, newItem,
+  ownsSpace, pageTrail, personalTenantName, persistSession as writeSession, persistWorkspace as writeWorkspace, profileFor, roles, savePage, sharedPage,
+  signUp, spaceInfo, taskAssignees, taskById, taskStatuses, tenantDemoScope, tenantIdForSpace, tenantNameFor, workspaceStorageKey} from './model.mjs?v=tenant-catalog-2';
 import {avatar, button, escapeHtml as html, icon} from './ui.mjs';
-import {editorCover, markdown, renderDocuments, renderSharedPage} from './documents.mjs';
+import {editorCover, markdown, renderDocuments, renderSharedPage} from './documents.mjs?v=tenant-catalog-2';
 import {applyFormatting, connectEditor, editorMarkdown, toggleSource, validateEditorLength} from './editor.mjs';
 import {renderBoard, visibleTasks} from './board.mjs';
-import {dialogContent, searchResults} from './dialogs.mjs';
+import {dialogContent, searchResults, spaceSwitcherItems} from './dialogs.mjs?v=tenant-catalog-2';
 import {approachSource, getRunSequence, renderApproach, retrievalLabels} from './approach.mjs';
-import {connectPresence, mergePageDraft, mergeWorkspaceChanges, withWorkspaceLock} from './collaboration.mjs';
+import {connectPresence, mergePageDraft, mergeWorkspaceChanges, withWorkspaceLock as lockWorkspace} from './collaboration.mjs?v=tenant-switch-2';
+import {prepareTenantDemo, tenantDemoOptions, usesTenantDemo} from './tenant-demo.mjs?v=tenant-catalog-2';
 import {coverImage, parseVideo, prepareCover} from './media.mjs';
 import {playEmbeddedVideo} from './commands.mjs';
 
@@ -15,9 +17,17 @@ const dock = document.querySelector('#dock');
 const host = document.querySelector('#workspace');
 const panel = document.querySelector('#panel');
 const notice = document.querySelector('#notice');
-let data = loadWorkspace();
 const entry = new URL(location.href);
-if (entry.searchParams.has('collaborate')) {
+const catalogDemo = entry.searchParams.get('from-catalog') === 'north';
+const tenantDemo = usesTenantDemo(entry.searchParams);
+const storageScope = tenantDemo ? tenantDemoScope : '';
+const loadWorkspace = () => readWorkspace(storageScope);
+const persistSession = data => writeSession(data,storageScope);
+const persistWorkspace = data => writeWorkspace(data,storageScope);
+const withWorkspaceLock = save => lockWorkspace(save,storageScope);
+if (tenantDemo) await prepareTenantDemo();
+let data = loadWorkspace();
+if (!tenantDemo && entry.searchParams.has('collaborate')) {
   data.account = null;
   persistSession(data);
   entry.searchParams.delete('collaborate');
@@ -36,12 +46,12 @@ let visitCursor = -1;
 let route = readRoute(), unmountGraph, modal, toastTimer, flowTimer;
 let run = {running:false, steps:[], current:null, completed:false, error:''};
 let draftBase, conflictBase, uploadedCover, savingPage = false;
-const signalPresence = connectPresence(drawPresence);
+const signalPresence = connectPresence(drawPresence,storageScope);
 
-function initialDoc() {
-  const preferred = data.space === 'north' ? 'access' : data.space === 'lab' ? 'lab-notes' : '';
+function initialDoc(space = data.space) {
+  const preferred = space === 'north' ? 'access' : space === 'lab' ? 'lab-notes' : '';
   if (accessFor(data,documentById(data,preferred)) !== 'none') return preferred;
-  return data.documents.find(doc => doc.space === data.space && doc.kind === 'page' && accessFor(data,doc) !== 'none')?.id || preferred;
+  return data.documents.find(doc => doc.space === space && doc.kind === 'page' && accessFor(data,doc) !== 'none')?.id || (tenantDemo ? '' : preferred);
 }
 function requestedShare() { return new URL(location.href).searchParams.get('share'); }
 function readRoute() {
@@ -49,6 +59,10 @@ function readRoute() {
   const view = Object.hasOwn(views,requested) ? requested : 'doc';
   let key;
   try { key = value ? decodeURIComponent(value) : ''; } catch { key = ''; }
+  if (tenantDemo && requested === 'space') {
+    const space = key === 'space-1' ? 'north' : key;
+    return {view:'doc',key:availableSpaces(data).includes(space) ? initialDoc(space) : '',space};
+  }
   return {view,key:key || (view === 'doc' ? initialDoc() : view === 'graph' ? 'access' : '')};
 }
 function activeDoc() {
@@ -56,6 +70,21 @@ function activeDoc() {
   return doc?.space === data.space ? doc : undefined;
 }
 function href(view,key = '') { return '#'+view+(key ? '/'+encodeURIComponent(key) : ''); }
+function documentHref() {
+  const key = activeDoc()?.id || initialDoc();
+  return tenantDemo && !key ? href('space',data.space) : href('doc',key);
+}
+function catalogDemoHref() {
+  const url = new URL('kb-spc-02.html', location.href);
+  url.searchParams.set(tenantDemo ? 'demo' : 'journey',tenantDemo ? 'tenants' : 'markdown');
+  url.searchParams.set('restore','1');
+  url.searchParams.set('theme',data.theme);
+  for (const key of ['q','scope','page','scenario']) {
+    if (entry.searchParams.has(key)) url.searchParams.set(key,entry.searchParams.get(key));
+  }
+  if (tenantDemo) url.searchParams.set('scenario',tenantIdForSpace(data) === demoOrganizationId ? 'admin' : 'personal');
+  return url.pathname + url.search + '#spaces';
+}
 function show(view,key) {
   closePanel();
   const target = href(view,key);
@@ -65,7 +94,7 @@ function show(view,key) {
 function recordVisit() {
   const last = visits[visitCursor];
   if (last?.view === route.view && last.key === route.key && last.space === data.space) return;
-  visits.splice(visitCursor+1,visits.length,{...route,space:data.space});
+  visits.splice(visitCursor+1,visits.length,{...route,space:data.space,spaceRoute:Boolean(route.space)});
   if (visits.length > 40) visits.shift();
   visitCursor = visits.length-1;
 }
@@ -77,7 +106,7 @@ function moveWithinApp(offset) {
     data.space = destination.space;
     persistSession(data);
   }
-  history.replaceState(null,'',href(destination.view,destination.key));
+  history.replaceState(null,'',destination.spaceRoute ? href('space',destination.space) : href(destination.view,destination.key));
   routeChanged(false);
 }
 function recentPages() {
@@ -91,7 +120,7 @@ function rememberPage(doc) {
 }
 function routeChanged(record = true) {
   const next = readRoute();
-  const changed = next.view !== route.view || next.key !== route.key;
+  const changed = next.view !== route.view || next.key !== route.key || next.space !== route.space;
   if (changed) {
     ui.editing = false;
     ui.contextTab = 'about';
@@ -102,8 +131,10 @@ function routeChanged(record = true) {
   route = next;
   if (route.view === 'doc' && requestedShare() === null) {
     const target = documentById(data,route.key);
-    if (target && target.space !== data.space && accessFor(data,target) !== 'none') {
-      data.space = target.space;
+    const space = target && accessFor(data,target) !== 'none' ? target.space
+      : route.space && availableSpaces(data).includes(route.space) ? route.space : undefined;
+    if (space && space !== data.space) {
+      data.space = space;
       persistSession(data);
     }
   }
@@ -155,7 +186,7 @@ function showPanel(type,options = {}) {
   modal = {type,...options};
   renderPanel();
   if (!panel.open) panel.showModal();
-  panel.querySelector('[autofocus]')?.focus();
+  (panel.querySelector('[autofocus]') || panel.querySelector('[data-action="close-panel"]'))?.focus();
 }
 function closePanel() {
   if (panel.open) panel.close();
@@ -163,9 +194,26 @@ function closePanel() {
 }
 function renderPanel() {
   if (!modal) return;
-  const {title, body, wide} = dialogContent(data,activeDoc(),modal);
+  let {title, body, wide} = dialogContent(data,activeDoc(),modal);
+  if (modal.type === 'tenants' && tenantDemo && data.account === 'anna') {
+    title = 'Выбрать среду';
+    body = tenantDemoOptions(tenantIdForSpace(data) === demoOrganizationId ? 'admin' : 'personal',data.theme,
+      {organization:demoOrganizationName,personal:personalTenantName});
+  }
+  const catalog = tenantDemo || catalogDemo && tenantIdForSpace(data) === demoOrganizationId;
+  const spaceFooter = modal.type === 'spaces'
+    ? `<footer class="space-dialog-footer">
+        <div class="space-dialog-actions">
+          ${catalog ? `<a class="btn" href="${html(catalogDemoHref())}">${icon('layers',15)}Все пространства</a>` : ''}
+          ${button('create-space','Создать пространство','plus',{className:'primary'})}
+        </div>
+        <div class="space-dialog-accessories">
+          <div class="mobile-tools">${button('settings','Настройки','settings',{className:'ghost'})}${button('account','Профиль','user',{className:'ghost'})}</div>
+          <div class="compact-history" role="group" aria-label="История переходов">${historyControls()}</div>
+        </div>
+      </footer>` : '';
   panel.dataset.wide = Boolean(wide);
-  panel.innerHTML = `<header class="dialog-header"><h2 id="dialog-title">${html(title)}</h2>${button('close-panel','','close',{className:'ghost',title:'Закрыть'})}</header><div class="dialog-body">${body}</div>`;
+  panel.innerHTML = `<header class="dialog-header"><h2 id="dialog-title">${html(title)}</h2>${button('close-panel','','close',{className:'ghost',title:'Закрыть'})}</header><div class="dialog-body">${body}</div>${spaceFooter}`;
 }
 function openTask(id) {
   const task = taskById(data,id);
@@ -174,7 +222,9 @@ function openTask(id) {
 function setTheme(theme) {
   data.theme = theme;
   document.body.dataset.theme = theme;
-  try { localStorage.setItem('sever.graph.theme',theme); } catch {}
+  if (!tenantDemo) {
+    try { localStorage.setItem('sever.graph.theme',theme); } catch {}
+  }
   const url = new URL(location.href);
   if (url.searchParams.has('theme')) {
     url.searchParams.set('theme',theme);
@@ -182,20 +232,34 @@ function setTheme(theme) {
   }
   persistSession(data);
 }
+function historyControls() {
+  return `${button('history-back','','left',{title:'Назад в приложении',className:'ghost',disabled:visitCursor<1})}
+    ${button('history-forward','','arrow',{title:'Вперёд в приложении',className:'ghost',disabled:visitCursor>=visits.length-1})}
+    <span class="dock-rule" aria-hidden="true"></span>${button('recent','Недавние','clock',{className:'ghost'})}`;
+}
 function renderDock() {
   if (!data.account) { dock.innerHTML = ''; return; }
   const work = spaceInfo(data);
+  const tenantId = tenantIdForSpace(data);
+  const inOrganization = tenantId === demoOrganizationId;
+  const tenantName = html(tenantNameFor(data,tenantId));
+  const tenantLabel = `<span class="brand-mark">${icon('north',16)}</span><span class="dock-tenant-name">${tenantName}</span>`;
+  const tenantControl = tenantDemo && data.account === 'anna' || availableTenants(data).some(id => id !== tenantId)
+    ? `<button type="button" class="dock-tenant" data-action="tenants" aria-haspopup="dialog" aria-label="Сменить среду. Текущая: ${tenantName}" title="${tenantName}">${tenantLabel}${icon('down',12)}</button>`
+    : `<span class="dock-tenant" title="${tenantName}">${tenantLabel}</span>`;
   const person = profileFor(data,data.account);
   const account = className => `<button type="button" class="dock-avatar ${className}" data-action="account" aria-label="Учётная запись: ${html(person.name)}">${avatar(person)}</button>`;
   dock.innerHTML = `<div class="dock-utility utility-start" role="group" aria-label="История переходов">
-    ${button('history-back','','left',{title:'Назад в приложении',className:'ghost',disabled:visitCursor<1})}
-    ${button('history-forward','','arrow',{title:'Вперёд в приложении',className:'ghost',disabled:visitCursor>=visits.length-1})}
-    <span class="dock-rule"></span>${button('recent','Недавние','clock',{className:'ghost'})}
+    ${historyControls()}
   </div><div class="dock-inner">
-    <button type="button" class="dock-brand" data-action="spaces" aria-label="Сменить пространство"><span class="brand-mark">${icon(work.glyph,16)}</span><span class="brand-name">${html(work.name)}</span>${icon('down',12)}</button>
+    <div class="dock-context" role="group" aria-label="Организация и пространство">
+      ${tenantControl}
+      <span class="dock-context-divider" aria-hidden="true">${icon('chevron',13)}</span>
+      <button type="button" class="dock-space" data-action="spaces" aria-haspopup="dialog" aria-label="Сменить пространство. Текущее: ${html(work.name)}" title="${html(work.name)}">${icon('folder',15)}<span class="dock-space-name">${html(work.name)}</span>${icon('down',12)}</button>
+    </div>
     <span class="dock-rule"></span>
-    <nav aria-label="Рабочие области">${Object.entries(views).map(([key,[label,glyph]]) =>
-      `<a href="${href(key,key === 'doc' ? activeDoc()?.id || initialDoc() : key === 'graph' ? activeDoc()?.graph || 'access' : '')}" class="dock-link" ${key === route.view ? 'aria-current="page"' : ''}>${icon(glyph,15)}<span>${label}</span></a>`
+    <nav aria-label="Рабочие области">${tenantDemo || catalogDemo && inOrganization ? `<a class="dock-link catalog-entry-link" href="${html(catalogDemoHref())}" title="Пространства">${icon('layers',15)}<span>Пространства</span></a>` : ''}${Object.entries(views).map(([key,[label,glyph]]) =>
+      `<a href="${key === 'doc' ? documentHref() : href(key,key === 'graph' ? activeDoc()?.graph || 'access' : '')}" class="dock-link" ${key === route.view ? 'aria-current="page"' : ''}>${icon(glyph,15)}<span>${label}</span></a>`
     ).join('')}</nav>
     <span class="dock-rule"></span>
     <div class="dock-actions">
@@ -234,7 +298,8 @@ function render({persistGraphTheme = true} = {}) {
     return;
   }
   if (route.view === 'doc') {
-    host.innerHTML = renderDocuments(data,activeDoc(),ui);
+    const spaceEmpty = Boolean(tenantDemo && route.space && route.space === data.space && !route.key && availableSpaces(data).includes(route.space));
+    host.innerHTML = renderDocuments(data,activeDoc(),{...ui,spaceEmpty});
     const form = host.querySelector('[data-form="page"]');
     if (form) connectEditor(form,{onVideo:insert => showPanel('video',{insert})});
     host.querySelector('.doc-scroll').scrollTop = docScroll;
@@ -248,10 +313,16 @@ function render({persistGraphTheme = true} = {}) {
   } else if (route.view === 'graph') {
     host.innerHTML = '<div class="graph-host"></div>';
     unmountGraph = window.KBGraph.mount(host.firstElementChild,{
-      key:route.key, boards:true,
+      key:route.key, boards:true, theme:data.theme,
       go:(view,key) => show(view,key),
       navigateKey:key => { route.key = key; history.replaceState(null,'',href('graph',key)); },
-      onThemeChange:theme => { setTheme(theme); renderDock(); },
+      onThemeChange:theme => {
+        const url = new URL(location.href);
+        url.searchParams.set('theme',theme);
+        history.replaceState(history.state,'',url);
+        setTheme(theme);
+        renderDock();
+      },
       taskInfo:id => {
         const task = taskById(data,id);
         return task && {sourceKey:task.sourceKey,title:task.title,assignee:profileFor(data,task.person)?.name,status:taskStatuses[task.status]};
@@ -327,11 +398,19 @@ function leaveShare() {
   history.replaceState(null,'',url);
   routeChanged();
 }
-function changeSpace(space) {
-  if (!availableSpaces(data).includes(space)) return;
+function openSpace(space) {
+  if (tenantDemo) { show('space',space); return; }
   data.space = space;
   persistSession(data);
   show('doc',initialDoc());
+}
+function changeSpace(space) {
+  if (availableTenantSpaces(data).includes(space)) openSpace(space);
+}
+function changeTenant(tenantId) {
+  if (tenantId === tenantIdForSpace(data)) { closePanel(); return; }
+  const [space] = availableTenantSpaces(data,tenantId);
+  if (space) openSpace(space);
 }
 function changeAccount(account) {
   if (account && !profileFor(data,account)) return;
@@ -540,6 +619,25 @@ function formError(form,selector,message) {
   target.textContent = message;
   target.hidden = false;
 }
+async function createDemoWorkspace(form,name,description) {
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;
+  const tenantId = tenantIdForSpace(data);
+  const result = await writeLatest(newest => {
+    const error = demoSpaceNameError(newest,name,tenantId);
+    if (error) return {error};
+    return {commit:true,id:createSpace(newest,name,description,tenantId,{starterPage:false}).id};
+  });
+  submit.disabled = false;
+  if (result.error) {
+    formError(form,'[data-space-name-error]',result.error);
+    form.elements.name.focus();
+  } else if (result.id) {
+    openSpace(result.id);
+    notify('Пространство создано');
+  }
+}
 function prepareRun() {
   if (run.running) return;
   run = {running:false,steps:[],current:null,completed:false,error:''};
@@ -572,12 +670,14 @@ const actions = {
   'history-forward':() => moveWithinApp(1),
   recent:() => showPanel('recent',{pages:recentPages()}),
   'toggle-theme':() => updateAppearance(data.theme === 'dark' ? 'light' : 'dark'),
+  tenants:() => showPanel('tenants'),
   spaces:() => showPanel('spaces'),
   settings:() => showPanel('settings'),
-  account:() => showPanel('account'),
+  account:() => showPanel('account',{fixedProfile:tenantDemo}),
   signup:() => { if (!data.account) showPanel('signup'); },
   'create-space':() => { if (data.account) showPanel('new-space'); },
   'choose-account':value => changeAccount(value),
+  'choose-tenant':value => changeTenant(value),
   'sign-out':() => changeAccount(null),
   'choose-space':value => changeSpace(value),
   'close-panel':() => closePanel(),
@@ -667,6 +767,9 @@ document.addEventListener('input',event => {
   if (target.matches('[data-search]')) {
     modal.query = target.value;
     panel.querySelector('[data-results]').innerHTML = searchResults(data,target.value);
+  } else if (target.matches('[data-space-search]') && modal?.type === 'spaces') {
+    modal.query = target.value;
+    panel.querySelector('[data-space-results]').innerHTML = spaceSwitcherItems(data,target.value);
   }
 });
 document.addEventListener('change',event => {
@@ -744,7 +847,12 @@ document.addEventListener('submit',event => {
     }
     case 'new-space': {
       const name = value('name').trim();
-      if (!data.account || !name) return;
+      if (!data.account) return;
+      if (tenantDemo) {
+        createDemoWorkspace(form,name,value('description').trim());
+        return;
+      }
+      if (!name) return;
       const {id,home} = createSpace(data,name,value('description').trim());
       data.space = id;
       save(); persistSession(data); show('doc',home.id); notify('Пространство создано'); return;
@@ -862,7 +970,7 @@ host.addEventListener('drop',event => {
 host.addEventListener('dragend',() => host.querySelectorAll('.drag-over').forEach(lane => lane.classList.remove('drag-over')));
 window.addEventListener('hashchange',() => routeChanged());
 window.addEventListener('storage',event => {
-  if (event.key !== workspaceStorageKey && event.key !== null) return;
+  if (event.key !== workspaceStorageKey + storageScope && event.key !== null) return;
   const openShareId = modal?.type === 'share' ? activeDoc()?.id : undefined;
   const currentAccess = openShareId ? JSON.stringify([data.permissions[openShareId],data.memberships[data.space]]) : '';
   adopt(loadWorkspace());

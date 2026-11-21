@@ -1,4 +1,5 @@
 use axum::{
+    extract::Request,
     http::{Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -10,10 +11,12 @@ use crate::{
         Store,
         external_sharing::{AssetKind, PublicPage},
     },
-    http::{html, method_not_allowed, plain},
+    http::{html, html_with_external_frames, method_not_allowed, plain},
     identity::token_digest,
-    markdown::render_markdown_with_attachments,
+    markdown::render_document,
+    teamstream::IsolatedOrigin,
     text::{escape_html, markdown_to_text},
+    views::PAGE_EMBED_SCRIPT,
 };
 
 #[derive(Clone, Copy)]
@@ -26,13 +29,14 @@ impl SharingDelivery {
     pub(crate) async fn published(
         &self,
         store: &Store,
-        method: &Method,
+        request: Request,
         id: Uuid,
         token: &str,
         resource: PublishedResource,
+        origin: &str,
     ) -> Result<Response, sqlx::Error> {
         let missing = || private_address(plain(StatusCode::NOT_FOUND, "Страница недоступна."));
-        if !matches!(*method, Method::GET | Method::HEAD) {
+        if !matches!(*request.method(), Method::GET | Method::HEAD) {
             return Ok(private_address(method_not_allowed("GET, HEAD")));
         }
         let Some(current_token) = self.token(PUBLIC, id) else {
@@ -46,7 +50,7 @@ impl SharingDelivery {
             PublishedResource::Page => store
                 .load_public_page(id, &digest)
                 .await?
-                .map(|page| html(StatusCode::OK, render_public(&page, id, token))),
+                .map(|page| public_page(&page, id, token, origin, request.extensions().get())),
             PublishedResource::Asset(kind, asset) => store
                 .load_public_asset(id, &digest, kind, asset)
                 .await?
@@ -63,7 +67,13 @@ pub(super) fn same_token(expected: &str, supplied: &str) -> bool {
     bool::from(expected.as_bytes().ct_eq(supplied.as_bytes()))
 }
 
-fn render_public(page: &PublicPage, id: Uuid, token: &str) -> String {
+fn public_page(
+    page: &PublicPage,
+    id: Uuid,
+    token: &str,
+    origin: &str,
+    teamstream: Option<&IsolatedOrigin>,
+) -> Response {
     let base = format!("/published/{id}/{token}");
     let title = escape_html(&page.title);
     let cover = if let Some(asset) = page.cover_id {
@@ -78,6 +88,7 @@ fn render_public(page: &PublicPage, id: Uuid, token: &str) -> String {
             _ => String::new(),
         }
     };
+    let mut embeds = false;
     let content = if page.source.is_empty() {
         r#"<p class="document-empty">Пока здесь ничего нет.</p>"#.to_owned()
     } else if page.markdown {
@@ -86,13 +97,18 @@ fn render_public(page: &PublicPage, id: Uuid, token: &str) -> String {
             .iter()
             .map(|(id, publication)| (*id, format!("{base}/images/{publication}")))
             .collect();
-        let rendered = render_markdown_with_attachments(&page.source, &|asset, image| {
-            if image {
-                images.get(&asset).map(String::as_str)
-            } else {
-                None
-            }
-        });
+        let rendered = render_document(
+            &page.source,
+            &|asset, image| {
+                if image {
+                    images.get(&asset).map(String::as_str)
+                } else {
+                    None
+                }
+            },
+            origin,
+        );
+        embeds = rendered.has_embeds();
         format!(
             r#"<div class="document-text document-markdown">{}</div>"#,
             rendered.as_str()
@@ -108,7 +124,7 @@ fn render_public(page: &PublicPage, id: Uuid, token: &str) -> String {
     } else {
         "space-heading page-cover-heading"
     };
-    public_document(
+    let body = document(
         &title,
         &format!(
             r#"
@@ -118,14 +134,24 @@ fn render_public(page: &PublicPage, id: Uuid, token: &str) -> String {
         <div class="space-badges"><span>Публичный просмотр</span></div></div></header>
         {content}</article></main>"#
         ),
-    )
+        if embeds { PAGE_EMBED_SCRIPT } else { "" },
+    );
+    if embeds {
+        html_with_external_frames(StatusCode::OK, body, teamstream)
+    } else {
+        html(StatusCode::OK, body)
+    }
 }
 
 pub(super) fn public_document(title: &str, contents: &str) -> String {
+    document(title, contents, "")
+}
+
+fn document(title: &str, contents: &str, scripts: &str) -> String {
     format!(
         r#"<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} · Север</title><link rel="stylesheet" href="/auth.css"><link rel="stylesheet" href="/spaces.css">
+<title>{title} · Север</title><link rel="stylesheet" href="/auth.css"><link rel="stylesheet" href="/spaces.css">{scripts}
 </head><body>{contents}</body></html>"#
     )
 }
